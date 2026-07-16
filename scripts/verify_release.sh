@@ -224,10 +224,10 @@ gate_enabled gitleaks && start_parallel_gate gitleaks check_gitleaks
 start_parallel_gate ai_boundaries check_boundaries
 finish_parallel_batch
 seal_artifact ai_boundaries.json
+gate_enabled test_unit_coverage && seal_artifact coverage.out
 
 if gate_enabled coverage_threshold; then
   recorded_run coverage_threshold check_coverage
-  seal_artifact coverage.out
   seal_artifact coverage_percent.txt
 fi
 run_conditional_gate test_race run_race_tests

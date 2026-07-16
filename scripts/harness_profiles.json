@@ -111,21 +111,13 @@
     "release": "release"
   },
   "gate_artifacts": {
-    "benchmarks": {
-      "artifacts": ["bench/base.txt", "bench/benchstat.txt", "bench/current.txt"]
-    }
+    "benchmarks": {"artifacts": ["bench/base.txt", "bench/benchstat.txt", "bench/current.txt"]}
   },
-  "machine_status_artifacts": [
-    "ai_boundaries.json",
-    "spec_registry.json"
-  ],
+  "machine_status_artifacts": ["ai_boundaries.json", "spec_registry.json"],
   "trusted_approval_runtime": [
-    "scripts/finalize_approval.py",
-    "scripts/check_ai_boundaries.py",
-    "scripts/collect_changes.py",
-    "scripts/lib/change_scope.py",
-    "scripts/lib/evidence.py",
-    "scripts/lib/harness_config.py",
+    "scripts/finalize_approval.py", "scripts/check_ai_boundaries.py",
+    "scripts/collect_changes.py", "scripts/lib/change_scope.py",
+    "scripts/lib/evidence.py", "scripts/lib/harness_config.py",
     "scripts/harness_profiles.json"
   ]
 }

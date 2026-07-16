@@ -103,6 +103,7 @@ assert accepted(v2, "gate-artifacts", "--gate", "build") == ""
 assert accepted(v2, "symlinks") == (
     "CLAUDE.md\tAGENTS.md\n.claude/skills\t.agents/skills\n"
 )
+assert "spec_registry.json" in accepted(v2, "artifacts").splitlines()
 
 trimmed = as_v2()
 trimmed["gate_sets"]["change"].remove("toolchain")

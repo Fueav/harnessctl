@@ -215,7 +215,7 @@ def main() -> int:
         sealed_artifacts = []
         errors.append(str(error))
     try:
-        active_specs = _load_active_specs(artifact_dir)
+        active_specs = _load_active_specs(artifact_dir) if "spec_registry" in required_gates else []
     except EvidenceError as error:
         active_specs = []
         errors.append(str(error))
@@ -334,15 +334,17 @@ def main() -> int:
                 errors.append(message)
 
     if overall == "passed" and args.mode in ("candidate", "release"):
-        if coverage_threshold is None or coverage_percentage is None:
-            overall = "failed"
-            errors.append("passed release evidence requires coverage proof")
-        elif coverage_percentage < coverage_threshold:
-            overall = "failed"
-            errors.append("coverage percentage is below the release threshold")
-        elif coverage_threshold < float(POLICY["coverage_threshold"]):
-            overall = "failed"
-            errors.append("coverage threshold is below the Harness policy minimum")
+        coverage_error = None
+        if "coverage_threshold" in required_gates:
+            if coverage_threshold is None or coverage_percentage is None:
+                coverage_error = "passed release evidence requires coverage proof"
+            elif coverage_percentage < coverage_threshold:
+                coverage_error = "coverage percentage is below the release threshold"
+            elif coverage_threshold < float(POLICY["coverage_threshold"]):
+                coverage_error = "coverage threshold is below the Harness policy minimum"
+        elif coverage_threshold is not None or coverage_percentage is not None:
+            coverage_error = "evidence without coverage_threshold must not contain coverage proof"
+        if coverage_error: overall = "failed"; errors.append(coverage_error)
         if _bool_or_none(args.clean_before) is not True:
             overall = "failed"
             errors.append("passed release evidence requires clean-before state")

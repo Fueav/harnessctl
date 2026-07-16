@@ -34,6 +34,10 @@ BUILTIN_GATE_ORDER = (
     "migration_safety", "prompt_evals", "spec_registry", "benchmarks", "release_context_after",
 )
 BUILTIN_GATES = frozenset(BUILTIN_GATE_ORDER)
+BUILTIN_GATE_ARTIFACTS = (
+    "ai_boundaries.json", "change_scope.json", "coverage.out", "coverage_percent.txt",
+    "spec_registry.json", "bench/base.txt", "bench/benchstat.txt", "bench/current.txt",
+)
 CUSTOM_GATE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 V1_KEYS = {
     "schema_version", "coverage_threshold", "unsealed_artifacts", "gate_sets", "profiles",
@@ -337,7 +341,7 @@ def _main() -> int:
             print(POLICY["coverage_threshold"])
             return 0
         if args.command == "artifacts":
-            print("\n".join(known_artifacts()))
+            print("\n".join(sorted(set(known_artifacts()) | set(BUILTIN_GATE_ARTIFACTS))))
             return 0
         if args.command == "custom-gates":
             lines = (f"{name}\t{run}" for name, run in custom_gates(args.profile))

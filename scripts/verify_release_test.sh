@@ -991,6 +991,11 @@ PY
 
 test_member_driven_gate_execution() {
   setup_repo member-driven-change-custom
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_change.sh" >"$TMP_DIR/member-driven-change-before.log" 2>&1 || \
+    fail "pre-migration change profile failed"
+  [[ -f "$REPO/.artifacts/change/spec_registry.json" ]] || \
+    fail "pre-migration change profile did not create spec_registry evidence"
   python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
 import json
 import pathlib
@@ -1006,6 +1011,7 @@ policy["gate_sets"]["change"] = [
 ]
 policy["profiles"]["change"]["skippable_gates"] = []
 policy["evidence_sets"]["change"]["artifacts"].remove("spec_registry.json")
+policy["evidence_sets"]["release"]["artifacts"].remove("spec_registry.json")
 policy["machine_status_artifacts"].remove("spec_registry.json")
 path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
 PY
@@ -1104,6 +1110,73 @@ assert omitted.isdisjoint(gate["name"] for gate in summary["gates"]), summary
 assert not (root / "spec_registry.json").exists(), summary
 for gate in omitted:
     assert not (root / "logs" / f"{gate}.log").exists(), gate
+PY
+
+  setup_repo member-driven-release-no-coverage
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+for gate in ("test_unit_coverage", "coverage_threshold"):
+    policy["gate_sets"]["release"].remove(gate)
+for artifact in ("coverage.out", "coverage_percent.txt"):
+    policy["evidence_sets"]["release"]["artifacts"].remove(artifact)
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  git -C "$REPO" add scripts/harness_profiles.json
+  git -C "$REPO" commit -q -m "omit release coverage gates"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/member-driven-release-no-coverage.log" 2>&1 || \
+    fail "release profile without coverage gates failed"
+  python3 - "$REPO/.artifacts/release" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+names = {gate["name"] for gate in summary["gates"]}
+assert summary["overall"] == "passed", summary
+assert summary["coverage"] == {"percentage": None, "threshold": None}, summary
+assert names.isdisjoint({"test_unit_coverage", "coverage_threshold"}), names
+assert not (root / "coverage.out").exists(), summary
+assert not (root / "coverage_percent.txt").exists(), summary
+PY
+
+  setup_repo member-driven-release-unit-coverage-only
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["gate_sets"]["release"].remove("coverage_threshold")
+policy["evidence_sets"]["release"]["artifacts"].remove("coverage_percent.txt")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  git -C "$REPO" add scripts/harness_profiles.json
+  git -C "$REPO" commit -q -m "retain unit coverage without threshold"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/member-driven-release-unit-only.log" 2>&1 || \
+    fail "release profile with unit coverage only failed"
+  python3 - "$REPO/.artifacts/release" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+names = {gate["name"] for gate in summary["gates"]}
+sealed = {artifact["path"] for artifact in summary["sealed_artifacts"]}
+assert summary["overall"] == "passed", summary
+assert summary["coverage"] == {"percentage": None, "threshold": None}, summary
+assert "test_unit_coverage" in names and "coverage_threshold" not in names, names
+assert "coverage.out" in sealed and (root / "coverage.out").is_file(), summary
+assert not (root / "coverage_percent.txt").exists(), summary
 PY
 }
 

@@ -221,11 +221,9 @@ def _validate_machine_evidence(
     sealed: Dict[str, str],
     trusted_scope: Dict[str, Any],
 ) -> Dict[str, str]:
+    required_gates = profile_gates("pull_request")
     statuses = validate_summary_gates(
-        summary,
-        contents,
-        profile_gates("pull_request"),
-        skippable_gates("pull_request"),
+        summary, contents, required_gates, skippable_gates("pull_request")
     )
     required_artifacts, required_seals = required_evidence("candidate", statuses)
     missing_artifacts = sorted(set(required_artifacts) - set(observed))
@@ -237,18 +235,25 @@ def _validate_machine_evidence(
     if summary.get("change_snapshot_sha256") != observed.get("change_scope.json"):
         raise FinalizationError("candidate change snapshot digest disagrees with the summary")
 
-    try:
-        coverage_percentage = float(contents["coverage_percent.txt"].decode("ascii").strip())
-    except (KeyError, UnicodeDecodeError, ValueError) as error:
-        raise FinalizationError("candidate coverage evidence is invalid") from error
     coverage = summary.get("coverage")
-    threshold = coverage.get("threshold") if isinstance(coverage, dict) else None
-    percentage = coverage.get("percentage") if isinstance(coverage, dict) else None
-    minimum = float(POLICY["coverage_threshold"])
-    if type(threshold) not in (int, float) or type(percentage) not in (int, float):
-        raise FinalizationError("candidate summary has invalid coverage values")
-    if threshold < minimum or percentage != coverage_percentage or percentage < threshold:
-        raise FinalizationError("candidate coverage does not satisfy the trusted threshold")
+    if "coverage_threshold" in required_gates:
+        try:
+            coverage_percentage = float(contents["coverage_percent.txt"].decode("ascii").strip())
+        except (KeyError, UnicodeDecodeError, ValueError) as error:
+            raise FinalizationError("candidate coverage evidence is invalid") from error
+        threshold = coverage.get("threshold") if isinstance(coverage, dict) else None
+        percentage = coverage.get("percentage") if isinstance(coverage, dict) else None
+        if type(threshold) not in (int, float) or type(percentage) not in (int, float):
+            raise FinalizationError("candidate summary has invalid coverage values")
+        if (
+            threshold < float(POLICY["coverage_threshold"])
+            or percentage != coverage_percentage or percentage < threshold
+        ):
+            raise FinalizationError("candidate coverage does not satisfy the trusted threshold")
+    elif coverage != {"percentage": None, "threshold": None} or "coverage_percent.txt" in contents:
+        raise FinalizationError("candidate without coverage_threshold has unexpected coverage evidence")
+    if "test_unit_coverage" not in required_gates and "coverage.out" in contents:
+        raise FinalizationError("candidate without test_unit_coverage has unexpected coverage output")
 
     scope = load_json_bytes(contents["change_scope.json"], "candidate change snapshot")
     if scope != trusted_scope:
@@ -263,13 +268,11 @@ def _validate_machine_evidence(
             raise FinalizationError(f"candidate change snapshot disagrees with summary identity {git_key}")
 
     for gate in ("test_race", "benchmarks"):
+        if gate not in required_gates:
+            continue
         required, _ = gate_decision(
-            "pull_request",
-            gate,
-            trusted_scope["changes"],
-            repo,
-            trusted_scope["base_sha"],
-            trusted_scope["head_sha"],
+            "pull_request", gate, trusted_scope["changes"], repo,
+            trusted_scope["base_sha"], trusted_scope["head_sha"],
         )
         if required and statuses.get(gate) != "passed":
             raise FinalizationError(f"trusted Git recomputation requires the {gate} gate")

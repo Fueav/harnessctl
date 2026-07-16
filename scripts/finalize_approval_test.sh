@@ -15,6 +15,8 @@ setup_fixture() {
   local name="$1"
   local omit_spec_registry="${2:-0}"
   local use_glob="${3:-0}"
+  local omit_coverage="${4:-0}"
+  local omit_conditionals="${5:-0}"
   local changed_path="data.txt"
   REPO="$TMP_DIR/$name"
   CANDIDATE_DIR="$REPO/.artifacts/candidate"
@@ -37,24 +39,38 @@ setup_fixture() {
     changed_path="nested/service.key"
     printf 'allowed:\n  - docs/\napproval_required:\n  - "*.key"\nforbidden:\n  - "*.pem"\n' \
       >"$REPO/.ai-boundaries.yml"
+  elif [[ "$omit_conditionals" == "1" ]]; then
+    changed_path="internal/risk/change.go"
+    printf 'allowed:\n  - docs/\napproval_required:\n  - internal/risk/\nforbidden:\n  - secrets/\n' \
+      >"$REPO/.ai-boundaries.yml"
   else
     printf 'allowed:\n  - docs/\napproval_required:\n  - data.txt\nforbidden:\n  - secrets/\n' \
       >"$REPO/.ai-boundaries.yml"
   fi
-  if [[ "$omit_spec_registry" == "1" ]]; then
-    python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+  python3 - "$REPO/scripts/harness_profiles.json" \
+    "$omit_spec_registry" "$omit_coverage" "$omit_conditionals" <<'PY'
 import json
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
 policy = json.loads(path.read_text(encoding="utf-8"))
-policy["gate_sets"]["release"].remove("spec_registry")
-policy["evidence_sets"]["release"]["artifacts"].remove("spec_registry.json")
-policy["machine_status_artifacts"].remove("spec_registry.json")
+omit_spec_registry, omit_coverage, omit_conditionals = sys.argv[2:]
+if omit_spec_registry == "1":
+    policy["gate_sets"]["release"].remove("spec_registry")
+    policy["evidence_sets"]["release"]["artifacts"].remove("spec_registry.json")
+    policy["machine_status_artifacts"].remove("spec_registry.json")
+if omit_coverage == "1":
+    for gate in ("test_unit_coverage", "coverage_threshold"):
+        policy["gate_sets"]["release"].remove(gate)
+    for artifact in ("coverage.out", "coverage_percent.txt"):
+        policy["evidence_sets"]["release"]["artifacts"].remove(artifact)
+if omit_conditionals == "1":
+    for gate in ("test_race", "benchmarks"):
+        policy["gate_sets"]["release"].remove(gate)
+        policy["profiles"]["pull_request"]["skippable_gates"].remove(gate)
 path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
 PY
-  fi
   printf 'base\n' >"$REPO/data.txt"
   git -C "$REPO" add -A
   git -C "$REPO" commit -q -m base
@@ -67,14 +83,14 @@ PY
   HEAD_TREE="$(git -C "$REPO" rev-parse 'HEAD^{tree}')"
   mkdir -p "$CANDIDATE_DIR"
   python3 - "$CANDIDATE_DIR" "$HEAD_SHA" "$HEAD_TREE" "$BASE" \
-    "$changed_path" "$omit_spec_registry" <<'PY'
+    "$changed_path" "$omit_spec_registry" "$omit_coverage" "$omit_conditionals" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-head, tree, base, changed_path, omit_spec_registry = sys.argv[2:]
+head, tree, base, changed_path, omit_spec_registry, omit_coverage, omit_conditionals = sys.argv[2:]
 required_gates = [
     "change_scope",
     "release_context_before",
@@ -98,6 +114,12 @@ required_gates = [
 ]
 if omit_spec_registry == "1":
     required_gates.remove("spec_registry")
+if omit_coverage == "1":
+    required_gates.remove("test_unit_coverage")
+    required_gates.remove("coverage_threshold")
+if omit_conditionals == "1":
+    required_gates.remove("test_race")
+    required_gates.remove("benchmarks")
 documents = {
     "ai_boundaries.json": {
         "approval_mode": "deferred",
@@ -140,8 +162,9 @@ for name, payload in documents.items():
     (root / name).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-(root / "coverage.out").write_text("mode: atomic\n", encoding="utf-8")
-(root / "coverage_percent.txt").write_text("100.0\n", encoding="ascii")
+if omit_coverage != "1":
+    (root / "coverage.out").write_text("mode: atomic\n", encoding="utf-8")
+    (root / "coverage_percent.txt").write_text("100.0\n", encoding="ascii")
 
 gates = []
 ledger_lines = []
@@ -168,11 +191,9 @@ for name in required_gates:
 (root / "gates.tsv").write_text("".join(ledger_lines), encoding="utf-8")
 
 artifacts = []
-artifact_names = list(documents) + [
-    "coverage.out",
-    "coverage_percent.txt",
-    "gates.tsv",
-] + [gate["log_path"] for gate in gates]
+artifact_names = list(documents) + ["gates.tsv"] + [gate["log_path"] for gate in gates]
+if omit_coverage != "1":
+    artifact_names.extend(("coverage.out", "coverage_percent.txt"))
 for name in sorted(artifact_names):
     path = root / name
     artifacts.append(
@@ -191,7 +212,11 @@ summary = {
     "change_snapshot_sha256": next(
         item["sha256"] for item in artifacts if item["path"] == "change_scope.json"
     ),
-    "coverage": {"percentage": 100.0, "threshold": 70.0},
+    "coverage": (
+        {"percentage": None, "threshold": None}
+        if omit_coverage == "1"
+        else {"percentage": 100.0, "threshold": 70.0}
+    ),
     "gate_ledger_sha256": next(
         item["sha256"] for item in artifacts if item["path"] == "gates.tsv"
     ),
@@ -311,6 +336,24 @@ assert not (candidate / "spec_registry.json").exists(), boundary
 assert result["status"] == "passed", result
 assert result["errors"] == [], result
 PY
+
+setup_fixture candidate-without-coverage 0 0 1
+run_finalizer APPROVED || fail "candidate without coverage gates failed finalization"
+python3 - "$CANDIDATE_DIR/summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert summary["coverage"] == {"percentage": None, "threshold": None}, summary
+assert not {"test_unit_coverage", "coverage_threshold"} & {
+    gate["name"] for gate in summary["gates"]
+}, summary
+PY
+
+setup_fixture candidate-without-conditionals 0 0 0 1
+run_finalizer APPROVED || \
+  fail "candidate without triggered conditional gates failed finalization"
 
 setup_fixture wrong-trusted-checkout
 git -C "$REPO" checkout -q --detach "$HEAD_SHA"
