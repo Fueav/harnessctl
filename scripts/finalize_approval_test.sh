@@ -13,6 +13,9 @@ fail() {
 
 setup_fixture() {
   local name="$1"
+  local omit_spec_registry="${2:-0}"
+  local use_glob="${3:-0}"
+  local changed_path="data.txt"
   REPO="$TMP_DIR/$name"
   CANDIDATE_DIR="$REPO/.artifacts/candidate"
   OUTPUT="$REPO/.artifacts/approval/finalization.json"
@@ -30,27 +33,49 @@ setup_fixture() {
   chmod +x "$REPO/scripts/finalize_approval.py"
   FINALIZER="$REPO/scripts/finalize_approval.py"
   printf '.artifacts/\n' >"$REPO/.gitignore"
-  printf 'allowed:\n  - docs/\napproval_required:\n  - data.txt\nforbidden:\n  - secrets/\n' \
-    >"$REPO/.ai-boundaries.yml"
+  if [[ "$use_glob" == "1" ]]; then
+    changed_path="nested/service.key"
+    printf 'allowed:\n  - docs/\napproval_required:\n  - "*.key"\nforbidden:\n  - "*.pem"\n' \
+      >"$REPO/.ai-boundaries.yml"
+  else
+    printf 'allowed:\n  - docs/\napproval_required:\n  - data.txt\nforbidden:\n  - secrets/\n' \
+      >"$REPO/.ai-boundaries.yml"
+  fi
+  if [[ "$omit_spec_registry" == "1" ]]; then
+    python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["gate_sets"]["release"].remove("spec_registry")
+policy["evidence_sets"]["release"]["artifacts"].remove("spec_registry.json")
+policy["machine_status_artifacts"].remove("spec_registry.json")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  fi
   printf 'base\n' >"$REPO/data.txt"
   git -C "$REPO" add -A
   git -C "$REPO" commit -q -m base
   BASE="$(git -C "$REPO" rev-parse HEAD)"
-  printf 'candidate\n' >>"$REPO/data.txt"
-  git -C "$REPO" add data.txt
+  mkdir -p "$REPO/$(dirname "$changed_path")"
+  printf 'candidate\n' >>"$REPO/$changed_path"
+  git -C "$REPO" add "$changed_path"
   git -C "$REPO" commit -q -m candidate
   HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"
   HEAD_TREE="$(git -C "$REPO" rev-parse 'HEAD^{tree}')"
   mkdir -p "$CANDIDATE_DIR"
-  python3 - "$CANDIDATE_DIR" "$HEAD_SHA" "$HEAD_TREE" "$BASE" <<'PY'
+  python3 - "$CANDIDATE_DIR" "$HEAD_SHA" "$HEAD_TREE" "$BASE" \
+    "$changed_path" "$omit_spec_registry" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-head, tree, base = sys.argv[2:]
-required_gates = (
+head, tree, base, changed_path, omit_spec_registry = sys.argv[2:]
+required_gates = [
     "change_scope",
     "release_context_before",
     "toolchain",
@@ -70,7 +95,9 @@ required_gates = (
     "spec_registry",
     "benchmarks",
     "release_context_after",
-)
+]
+if omit_spec_registry == "1":
+    required_gates.remove("spec_registry")
 documents = {
     "ai_boundaries.json": {
         "approval_mode": "deferred",
@@ -78,7 +105,7 @@ documents = {
         "approved": False,
         "classifications": {
             "allowed": [],
-            "approval_required": ["data.txt"],
+            "approval_required": [changed_path],
             "forbidden": [],
             "unclassified": [],
         },
@@ -94,20 +121,21 @@ documents = {
     },
     "change_scope.json": {
         "base_sha": base,
-        "changes": [{"path": "data.txt", "sources": ["committed"]}],
+        "changes": [{"path": changed_path, "sources": ["committed"]}],
         "clean": True,
         "head_sha": head,
         "head_tree_sha": tree,
         "merge_base_sha": base,
         "mode": "release",
     },
-    "spec_registry.json": {
+}
+if omit_spec_registry != "1":
+    documents["spec_registry.json"] = {
         "active_specs": [],
         "schema_version": 1,
         "specs": [],
         "status": "passed",
-    },
-}
+    }
 for name, payload in documents.items():
     (root / name).write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -263,6 +291,25 @@ assert payload["candidate"]["compare_sha"] == sys.argv[3], payload
 assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", payload["finished_at"]), payload
 assert len(payload["candidate"]["head_tree_sha"]) == 40, payload
 assert len(payload["candidate"]["merge_base_sha"]) == 40, payload
+PY
+
+setup_fixture glob-without-spec-registry 1 1
+run_finalizer APPROVED || \
+  fail "glob-classified candidate without spec_registry evidence failed"
+python3 - "$CANDIDATE_DIR" "$OUTPUT" <<'PY'
+import json
+import pathlib
+import sys
+
+candidate = pathlib.Path(sys.argv[1])
+boundary = json.loads((candidate / "ai_boundaries.json").read_text(encoding="utf-8"))
+result = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert boundary["classifications"]["approval_required"] == [
+    "nested/service.key"
+], boundary
+assert not (candidate / "spec_registry.json").exists(), boundary
+assert result["status"] == "passed", result
+assert result["errors"] == [], result
 PY
 
 setup_fixture wrong-trusted-checkout

@@ -212,6 +212,74 @@ assert payload["status"] == "failed"
 PY
 }
 
+test_basename_glob_classification_and_validation() {
+  local repo="$TMP_DIR/basename-glob"
+  local artifact_dir="$TMP_DIR/artifacts/basename-glob"
+  local base
+
+  init_repo "$repo"
+  cat >"$repo/.ai-boundaries.yml" <<'POLICY'
+allowed:
+  - certs/
+approval_required:
+  - "*.key"
+forbidden:
+  - "*.pem"
+POLICY
+  commit_all "$repo" "base"
+  base="$(git -C "$repo" rev-parse HEAD)"
+
+  mkdir -p "$repo/certs" "$repo/nested/deeper"
+  printf 'certificate\n' >"$repo/certs/server.pem"
+  printf 'private key\n' >"$repo/nested/deeper/service.key"
+  commit_all "$repo" "change glob-matched files"
+
+  if run_check "$repo" "$base" "$artifact_dir" 1; then
+    fail "forbidden basename glob passed with approval"
+  fi
+  python3 - "$artifact_dir/ai_boundaries.json" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert payload["classifications"]["forbidden"] == ["certs/server.pem"], payload
+assert payload["classifications"]["approval_required"] == [
+    "nested/deeper/service.key"
+], payload
+record = next(item for item in payload["changes"] if item["path"] == "certs/server.pem")
+assert record["candidate_classification"] == "forbidden", record
+assert record["trusted_classification"] == "forbidden", record
+assert record["effective_classification"] == "forbidden", record
+PY
+
+  python3 -I -B -S - "$repo/scripts/check_ai_boundaries.py" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("boundary_checker", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for pattern in ("?", "[ab].pem", "dir/*.pem", "*", "**"):
+    raw = (
+        "allowed:\n"
+        "  - docs/\n"
+        "approval_required:\n"
+        f"  - {pattern}\n"
+        "forbidden:\n"
+        "  - secrets/\n"
+    ).encode()
+    try:
+        module.parse_policy(raw, "test policy")
+    except module.BoundaryError as error:
+        assert "basename glob" in str(error), (pattern, error)
+    else:
+        raise AssertionError(f"unsupported pattern was accepted: {pattern}")
+PY
+}
+
 test_unclassified_path_fails_closed() {
   local repo="$TMP_DIR/unclassified"
   local artifact_dir="$TMP_DIR/artifacts/unclassified"
@@ -982,6 +1050,7 @@ test_trusted_policy_prevents_self_weakening
 test_allowed_path_passes
 test_approval_required_needs_explicit_approval
 test_forbidden_path_always_fails
+test_basename_glob_classification_and_validation
 test_bootstrap_paths_are_never_freely_allowed
 test_exact_file_and_directory_prefix_matching
 test_rename_cannot_escape_protected_source

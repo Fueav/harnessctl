@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -102,9 +103,15 @@ def _parse_scalar(raw_value: str, source: str, line_number: int) -> str:
         raise BoundaryError(f"{source}:{line_number}: policy paths must be relative")
     if any(part == ".." for part in value.rstrip("/").split("/")):
         raise BoundaryError(f"{source}:{line_number}: policy paths must not traverse upward")
-    if any(character in value for character in "*?[]"):
+    if "?" in value or "[" in value or "]" in value:
         raise BoundaryError(
-            f"{source}:{line_number}: glob patterns are not supported; use a directory suffix '/'"
+            f"{source}:{line_number}: only a basename glob containing '*' is supported "
+            "(for example '*.pem' or '*secret*'); '?', '[]', and path globs are rejected"
+        )
+    if "*" in value and ("/" in value or not value.strip("*")):
+        raise BoundaryError(
+            f"{source}:{line_number}: only a basename glob containing '*' is supported "
+            "(for example '*.pem' or '*secret*'); '?', '[]', and path globs are rejected"
         )
     return value
 
@@ -172,6 +179,8 @@ def parse_policy(raw: bytes, source: str) -> Policy:
 def _matches(path: str, entry: str) -> bool:
     if entry.endswith("/"):
         return path.startswith(entry)
+    if "*" in entry:
+        return fnmatch.fnmatchcase(pathlib.PurePosixPath(path).name, entry)
     return path == entry
 
 
