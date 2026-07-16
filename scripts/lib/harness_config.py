@@ -31,8 +31,7 @@ BUILTIN_GATE_ORDER = (
     "change_scope", "release_context_before", "toolchain", "symlinks", "gofmt",
     "build", "vet", "golangci", "changed_package_tests", "test_unit_coverage",
     "govulncheck", "gitleaks", "ai_boundaries", "coverage_threshold", "test_race",
-    "migration_safety", "prompt_evals", "spec_registry", "benchmarks",
-    "release_context_after",
+    "migration_safety", "prompt_evals", "spec_registry", "benchmarks", "release_context_after",
 )
 BUILTIN_GATES = frozenset(BUILTIN_GATE_ORDER)
 CUSTOM_GATE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
@@ -94,8 +93,6 @@ def _validate_v2_extensions(policy: Dict[str, Any]) -> None:
         _relative(pair["link"], "Harness symlink link")
         _relative(pair["target"], "Harness symlink target")
 
-
-
 def _validate_gate_sets(policy: Dict[str, Any]) -> None:
     custom = policy["custom_gates"]
     known = BUILTIN_GATES | set(custom)
@@ -108,16 +105,12 @@ def _validate_gate_sets(policy: Dict[str, Any]) -> None:
             raise ConfigError(f"Harness gate set {set_name!r} contains unknown gates")
         builtin_positions = [order[gate] for gate in gates if gate in BUILTIN_GATES]
         if builtin_positions != sorted(builtin_positions):
-            raise ConfigError(
-                f"Harness gate set {set_name!r} built-ins must follow BUILTIN_GATE_ORDER"
-            )
+            raise ConfigError(f"Harness gate set {set_name!r} built-ins must follow BUILTIN_GATE_ORDER")
         missing = {"change_scope", "ai_boundaries"} - set(gates)
         if missing:
             raise ConfigError(f"Harness gate set {set_name!r} is missing mandatory gates")
         if "coverage_threshold" in gates and "test_unit_coverage" not in gates:
-            raise ConfigError(
-                f"Harness gate set {set_name!r} requires test_unit_coverage before coverage_threshold"
-            )
+            raise ConfigError(f"Harness gate set {set_name!r} requires test_unit_coverage before coverage_threshold")
         if "release_context_after" in gates and gates[-1] != "release_context_after":
             raise ConfigError(f"Harness gate set {set_name!r} has invalid custom gate ordering")
         ordered = gates[:-1] if gates and gates[-1] == "release_context_after" else gates
@@ -172,12 +165,9 @@ def load_policy() -> Dict[str, Any]:
             profile.get("evidence_modes"),
             f"Harness profile {name!r} evidence modes",
         )
-        if set(evidence_modes) & {"candidate", "release"} and not {
-            "release_context_before", "release_context_after",
-        }.issubset(gates):
-            raise ConfigError(
-                f"Harness profile {name!r} requires release context gates"
-            )
+        release_context = {"release_context_before", "release_context_after"}
+        if set(evidence_modes) & {"candidate", "release"} and not release_context.issubset(gates):
+            raise ConfigError(f"Harness profile {name!r} requires release context gates")
         skips = _unique_strings(
             profile.get("skippable_gates"),
             f"Harness profile {name!r} skippable gates",
