@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.2.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.2.1
 ```
 
 Consumer repositories pin the same version in `harness/harness.lock`. The CLI refuses to execute when the running version and lock disagree.
@@ -53,7 +53,7 @@ Schema v2 adds repository-owned command gates and configured symlink pairs:
 
 Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. The gate name is added to a `gate_sets` sequence, and any output files are declared through the existing `gate_artifacts` map. Symlink `link` and `target` values are normalized paths relative to the repository root; the link itself may use the corresponding relative target (for example, `.claude/skills` resolves to `.agents/skills`).
 
-To migrate a v1 consumer, change `schema_version` to `2`, add `custom_gates` and `symlinks` (either may be empty), and update `harness/harness.lock` to `v0.2.0`. Schema v1 remains supported and receives the four v0.1.0 template symlink pairs during loading.
+To migrate a v1 consumer, change `schema_version` to `2`, add `custom_gates` and `symlinks` (either may be empty), and update `harness/harness.lock` to `v0.2.1`. Schema v1 remains supported and receives the four v0.1.0 template symlink pairs during loading.
 
 ## Custom gate runtime contract
 

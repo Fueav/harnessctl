@@ -440,7 +440,7 @@ assert not any(item["name"] == "spec_registry" for item in payload["gates"]), pa
 PY
 }
 
-test_profile_selection_and_parallel_execution() {
+test_custom_gate_candidate_approval_finalization() {
   setup_repo pull-request-docs
   python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
 import json
@@ -498,8 +498,24 @@ PY
     --expected-compare-sha "$BASE" \
     --review-decision APPROVED \
     --output .artifacts/approval/finalization.json || \
-    fail "real candidate evidence did not pass lightweight approval finalization"
+    fail "custom-gate candidate evidence did not pass approval finalization"
+  python3 - \
+    "$REPO/.artifacts/candidate/summary.json" \
+    "$REPO/.artifacts/approval/finalization.json" <<'PY'
+import json
+import pathlib
+import sys
 
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+finalization = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+assert any(gate["name"] == "approval_check" for gate in summary["gates"]), summary
+assert finalization["status"] == "passed", finalization
+assert finalization["approval_satisfied"] is True, finalization
+assert finalization["errors"] == [], finalization
+PY
+}
+
+test_profile_selection_and_parallel_execution() {
   setup_repo pull-request-risk
   printf 'package risk\n' >"$REPO/internal/risk/change.go"
   git -C "$REPO" add internal/risk/change.go
@@ -1097,6 +1113,7 @@ test_tool_and_scan_boundaries() {
 test_missing_and_invalid_compare
 test_dirty_release_fails
 test_stable_release_and_failed_rerun
+test_custom_gate_candidate_approval_finalization
 test_profile_selection_and_parallel_execution
 test_configured_and_legacy_symlinks
 test_failed_symlink_config_query_fails_gate

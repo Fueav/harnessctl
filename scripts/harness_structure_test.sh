@@ -86,8 +86,8 @@ grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
 
-grep -Fq 'VERSION ?= v0.2.0' "$ROOT_DIR/Makefile" || \
-  fail "make build does not default to v0.2.0"
+grep -Fq 'VERSION ?= v0.2.1' "$ROOT_DIR/Makefile" || \
+  fail "make build does not default to v0.2.1"
 grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
   fail "make build does not inject the release version"
 for contract in \
