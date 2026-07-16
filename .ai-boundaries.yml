@@ -1,0 +1,24 @@
+allowed:
+  - .gitignore
+  - LICENSE
+  - README.md
+
+approval_required:
+  - .ai-boundaries.yml
+  - .github/
+  - AGENTS.md
+  - Makefile
+  - cli.go
+  - cli_test.go
+  - cmd/
+  - go.mod
+  - go.sum
+  - scripts/
+  - version.go
+
+forbidden:
+  - .git/
+  - .artifacts/
+  - .tools/
+  - dist/
+  - secrets/

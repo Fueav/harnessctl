@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "coverage_threshold": 70.0,
+  "unsealed_artifacts": ["gates.tsv"],
+  "gate_sets": {
+    "change": [
+      "change_scope",
+      "toolchain",
+      "gofmt",
+      "vet",
+      "golangci",
+      "changed_package_tests",
+      "ai_boundaries",
+      "spec_registry"
+    ],
+    "release": [
+      "change_scope",
+      "release_context_before",
+      "toolchain",
+      "symlinks",
+      "gofmt",
+      "build",
+      "vet",
+      "golangci",
+      "test_unit_coverage",
+      "govulncheck",
+      "gitleaks",
+      "ai_boundaries",
+      "coverage_threshold",
+      "test_race",
+      "migration_safety",
+      "prompt_evals",
+      "spec_registry",
+      "benchmarks",
+      "release_context_after"
+    ]
+  },
+  "profiles": {
+    "change": {
+      "evidence_modes": ["change"],
+      "gate_set": "change",
+      "skippable_gates": ["toolchain", "gofmt", "vet", "golangci", "changed_package_tests"]
+    },
+    "pull_request": {
+      "evidence_modes": ["candidate"],
+      "gate_set": "release",
+      "skippable_gates": ["test_race", "benchmarks"]
+    },
+    "nightly": {
+      "evidence_modes": ["release"],
+      "gate_set": "release",
+      "skippable_gates": []
+    },
+    "release": {
+      "evidence_modes": ["release"],
+      "gate_set": "release",
+      "skippable_gates": []
+    }
+  },
+  "conditional_gates": {
+    "test_race": {
+      "always_profiles": ["nightly", "release"],
+      "path_prefixes": ["internal/risk/", "internal/ledger/", "internal/clearing/"],
+      "skip_reason": "no protected financial paths changed"
+    },
+    "benchmarks": {
+      "always_profiles": ["nightly", "release"],
+      "path_prefixes": [
+        "internal/risk/",
+        "internal/ledger/",
+        "internal/clearing/",
+        "pkg/metrics/",
+        "internal/observability/"
+      ],
+      "benchmark_file_suffix": "_test.go",
+      "benchmark_declaration": "func Benchmark",
+      "explicit_request": true,
+      "skip_reason": "no performance-sensitive paths or benchmark files changed"
+    }
+  },
+  "evidence_sets": {
+    "change": {
+      "artifacts": [
+        "gates.tsv",
+        "change_scope.json",
+        "ai_boundaries.json",
+        "spec_registry.json"
+      ]
+    },
+    "release": {
+      "artifacts": [
+        "gates.tsv",
+        "change_scope.json",
+        "ai_boundaries.json",
+        "spec_registry.json",
+        "coverage.out",
+        "coverage_percent.txt"
+      ]
+    }
+  },
+  "evidence": {
+    "change": "change",
+    "candidate": "release",
+    "release": "release"
+  },
+  "gate_artifacts": {
+    "benchmarks": {
+      "artifacts": ["bench/base.txt", "bench/benchstat.txt", "bench/current.txt"]
+    }
+  },
+  "machine_status_artifacts": [
+    "ai_boundaries.json",
+    "spec_registry.json"
+  ],
+  "trusted_approval_runtime": [
+    "scripts/finalize_approval.py",
+    "scripts/check_ai_boundaries.py",
+    "scripts/collect_changes.py",
+    "scripts/lib/change_scope.py",
+    "scripts/lib/evidence.py",
+    "scripts/lib/harness_config.py",
+    "scripts/harness_profiles.json"
+  ]
+}
