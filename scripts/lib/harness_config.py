@@ -27,13 +27,14 @@ CONFIG_PATH = pathlib.Path(
     )
 )
 
-BUILTIN_GATES = frozenset({
-    "change_scope", "toolchain", "symlinks", "gofmt", "build", "vet", "golangci",
-    "changed_package_tests", "test_unit_coverage", "govulncheck", "gitleaks",
-    "ai_boundaries", "coverage_threshold", "test_race", "migration_safety",
-    "prompt_evals", "spec_registry", "benchmarks", "release_context_before",
+BUILTIN_GATE_ORDER = (
+    "change_scope", "release_context_before", "toolchain", "symlinks", "gofmt",
+    "build", "vet", "golangci", "changed_package_tests", "test_unit_coverage",
+    "govulncheck", "gitleaks", "ai_boundaries", "coverage_threshold", "test_race",
+    "migration_safety", "prompt_evals", "spec_registry", "benchmarks",
     "release_context_after",
-})
+)
+BUILTIN_GATES = frozenset(BUILTIN_GATE_ORDER)
 CUSTOM_GATE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 V1_KEYS = {
     "schema_version", "coverage_threshold", "unsealed_artifacts", "gate_sets", "profiles",
@@ -93,13 +94,30 @@ def _validate_v2_extensions(policy: Dict[str, Any]) -> None:
         _relative(pair["link"], "Harness symlink link")
         _relative(pair["target"], "Harness symlink target")
 
+
+
+def _validate_gate_sets(policy: Dict[str, Any]) -> None:
+    custom = policy["custom_gates"]
     known = BUILTIN_GATES | set(custom)
+    order = {gate: index for index, gate in enumerate(BUILTIN_GATE_ORDER)}
     referenced = set()
     for set_name, gates in policy["gate_sets"].items():
         gates = _unique_strings(gates, f"Harness gate set {set_name!r}")
         unknown = set(gates) - known
         if unknown:
             raise ConfigError(f"Harness gate set {set_name!r} contains unknown gates")
+        builtin_positions = [order[gate] for gate in gates if gate in BUILTIN_GATES]
+        if builtin_positions != sorted(builtin_positions):
+            raise ConfigError(
+                f"Harness gate set {set_name!r} built-ins must follow BUILTIN_GATE_ORDER"
+            )
+        missing = {"change_scope", "ai_boundaries"} - set(gates)
+        if missing:
+            raise ConfigError(f"Harness gate set {set_name!r} is missing mandatory gates")
+        if "coverage_threshold" in gates and "test_unit_coverage" not in gates:
+            raise ConfigError(
+                f"Harness gate set {set_name!r} requires test_unit_coverage before coverage_threshold"
+            )
         if "release_context_after" in gates and gates[-1] != "release_context_after":
             raise ConfigError(f"Harness gate set {set_name!r} has invalid custom gate ordering")
         ordered = gates[:-1] if gates and gates[-1] == "release_context_after" else gates
@@ -139,6 +157,7 @@ def load_policy() -> Dict[str, Any]:
     else:
         policy["custom_gates"] = {}
         policy["symlinks"] = [dict(pair) for pair in LEGACY_SYMLINKS]
+    _validate_gate_sets(policy)
     if set(policy["profiles"]) != {"change", "pull_request", "nightly", "release"}:
         raise ConfigError("Harness profile policy has an invalid profile set")
     for name, profile in policy["profiles"].items():
@@ -149,10 +168,16 @@ def load_policy() -> Dict[str, Any]:
             policy["gate_sets"][gate_set],
             f"Harness profile {name!r} gates",
         )
-        _unique_strings(
+        evidence_modes = _unique_strings(
             profile.get("evidence_modes"),
             f"Harness profile {name!r} evidence modes",
         )
+        if set(evidence_modes) & {"candidate", "release"} and not {
+            "release_context_before", "release_context_after",
+        }.issubset(gates):
+            raise ConfigError(
+                f"Harness profile {name!r} requires release context gates"
+            )
         skips = _unique_strings(
             profile.get("skippable_gates"),
             f"Harness profile {name!r} skippable gates",
@@ -299,6 +324,8 @@ def _main() -> int:
     subparsers.add_parser("artifacts")
     custom = subparsers.add_parser("custom-gates")
     custom.add_argument("--profile", required=True)
+    profile_gate_parser = subparsers.add_parser("profile-gates")
+    profile_gate_parser.add_argument("--profile", required=True)
     gate_artifact_parser = subparsers.add_parser("gate-artifacts")
     gate_artifact_parser.add_argument("--gate", required=True)
     subparsers.add_parser("symlinks")
@@ -325,6 +352,9 @@ def _main() -> int:
         if args.command == "custom-gates":
             lines = (f"{name}\t{run}" for name, run in custom_gates(args.profile))
             sys.stdout.write("".join(f"{line}\n" for line in lines))
+            return 0
+        if args.command == "profile-gates":
+            sys.stdout.write("".join(f"{gate}\n" for gate in profile_gates(args.profile)))
             return 0
         if args.command == "gate-artifacts":
             sys.stdout.write("".join(f"{path}\n" for path in gate_artifacts(args.gate)))

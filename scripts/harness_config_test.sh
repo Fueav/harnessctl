@@ -77,6 +77,9 @@ def rejected(label, mutate):
 v1 = as_v1()
 accepted(v1, "validate", "--profile", "change", "--mode", "change")
 assert accepted(v1, "custom-gates", "--profile", "change") == ""
+assert accepted(v1, "profile-gates", "--profile", "change").splitlines() == (
+    v1["gate_sets"]["change"]
+)
 legacy_links = accepted(v1, "symlinks").splitlines()
 assert legacy_links == [
     "CLAUDE.md\tAGENTS.md",
@@ -90,12 +93,24 @@ accepted(v2, "validate", "--profile", "change", "--mode", "change")
 assert accepted(v2, "custom-gates", "--profile", "change") == (
     "project_check\tscripts/gates/project_check.sh\n"
 )
+assert accepted(v2, "profile-gates", "--profile", "change").splitlines() == (
+    v2["gate_sets"]["change"]
+)
 assert accepted(v2, "gate-artifacts", "--gate", "project_check") == (
     "custom/project-check.json\n"
 )
 assert accepted(v2, "gate-artifacts", "--gate", "build") == ""
 assert accepted(v2, "symlinks") == (
     "CLAUDE.md\tAGENTS.md\n.claude/skills\t.agents/skills\n"
+)
+
+trimmed = as_v2()
+trimmed["gate_sets"]["change"].remove("toolchain")
+trimmed["gate_sets"]["change"].remove("spec_registry")
+trimmed["profiles"]["change"]["skippable_gates"].remove("toolchain")
+accepted(trimmed, "validate", "--profile", "change", "--mode", "change")
+assert accepted(trimmed, "profile-gates", "--profile", "change").splitlines() == (
+    trimmed["gate_sets"]["change"]
 )
 
 rejected("builtin collision", lambda p: (
@@ -134,6 +149,15 @@ rejected("unhashable skippable gate", lambda p: p["profiles"]["change"]["skippab
 rejected("unhashable artifact path", lambda p: p["gate_artifacts"]["project_check"]["artifacts"].append({"invalid": True}))
 rejected("unhashable profile gate set", lambda p: p["profiles"]["change"].__setitem__("gate_set", {"invalid": True}))
 rejected("unhashable evidence set reference", lambda p: p["evidence"].__setitem__("change", {"invalid": True}))
+rejected("missing mandatory change scope", lambda p: p["gate_sets"]["change"].remove("change_scope"))
+rejected("missing mandatory AI boundaries", lambda p: p["gate_sets"]["change"].remove("ai_boundaries"))
+rejected("missing candidate release context before", lambda p: p["gate_sets"]["release"].remove("release_context_before"))
+rejected("missing release context after", lambda p: p["gate_sets"]["release"].remove("release_context_after"))
+rejected("builtin order is not a subsequence", lambda p: (
+    p["gate_sets"]["change"].remove("vet"),
+    p["gate_sets"]["change"].insert(p["gate_sets"]["change"].index("gofmt"), "vet"),
+))
+rejected("coverage threshold without unit coverage", lambda p: p["gate_sets"]["release"].remove("test_unit_coverage"))
 for delimiter_name, delimiter in (("tab", "\t"), ("carriage return", "\r"), ("newline", "\n")):
     rejected(
         f"{delimiter_name} in custom command",
