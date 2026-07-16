@@ -17,11 +17,16 @@ RUNNER_COVERAGE_THRESHOLD="$COVERAGE_THRESHOLD"
 
 source "$ENGINE_DIR/lib/verify_runner.sh"
 runner_init
-if [[ -z "$COVERAGE_THRESHOLD" ]]; then
-  COVERAGE_THRESHOLD="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
-    "$ENGINE_DIR/lib/harness_config.py" coverage)" || \
-    die "cannot load the Harness coverage policy"
+if gate_enabled coverage_threshold; then
+  if [[ -z "$COVERAGE_THRESHOLD" ]]; then
+    COVERAGE_THRESHOLD="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+      "$ENGINE_DIR/lib/harness_config.py" coverage)" || \
+      die "cannot load the Harness coverage policy"
+  fi
   RUNNER_COVERAGE_THRESHOLD="$COVERAGE_THRESHOLD"
+else
+  COVERAGE_THRESHOLD=""
+  RUNNER_COVERAGE_THRESHOLD=""
 fi
 BENCH_WORKTREE="$ARTIFACT_DIR/bench/base-worktree"
 
@@ -183,6 +188,7 @@ check_final_context() {
 
 run_conditional_gate() {
   local gate="$1" command="$2" reason status
+  gate_enabled "$gate" || return 0
   if reason="$(runner_gate_reason "$gate")"; then
     recorded_run "$gate" "$command" "$reason"
   else
@@ -200,34 +206,39 @@ runner_resolve_context
 recorded_run change_scope collect_scope
 seal_artifact change_scope.json
 recorded_run release_context_before check_initial_context
-recorded_run toolchain ensure_tools golangci-lint govulncheck gitleaks benchstat
-start_parallel_gate symlinks check_symlinks
-start_parallel_gate gofmt check_gofmt
-start_parallel_gate build go build ./...
-start_parallel_gate vet go vet ./...
-start_parallel_gate golangci golangci-lint run ./...
+gate_enabled toolchain && \
+  recorded_run toolchain ensure_tools golangci-lint govulncheck gitleaks benchstat
+gate_enabled symlinks && start_parallel_gate symlinks check_symlinks
+gate_enabled gofmt && start_parallel_gate gofmt check_gofmt
+gate_enabled build && start_parallel_gate build go build ./...
+gate_enabled vet && start_parallel_gate vet go vet ./...
+gate_enabled golangci && start_parallel_gate golangci golangci-lint run ./...
 finish_parallel_batch
 
-start_parallel_gate test_unit_coverage \
-  go test -coverpkg=./... -coverprofile="$ARTIFACT_DIR/coverage.out" ./...
-start_parallel_gate govulncheck govulncheck ./...
-start_parallel_gate gitleaks check_gitleaks
+if gate_enabled test_unit_coverage; then
+  start_parallel_gate test_unit_coverage \
+    go test -coverpkg=./... -coverprofile="$ARTIFACT_DIR/coverage.out" ./...
+fi
+gate_enabled govulncheck && start_parallel_gate govulncheck govulncheck ./...
+gate_enabled gitleaks && start_parallel_gate gitleaks check_gitleaks
 start_parallel_gate ai_boundaries check_boundaries
 finish_parallel_batch
 seal_artifact ai_boundaries.json
 
-recorded_run coverage_threshold check_coverage
-seal_artifact coverage.out
-seal_artifact coverage_percent.txt
+if gate_enabled coverage_threshold; then
+  recorded_run coverage_threshold check_coverage
+  seal_artifact coverage.out
+  seal_artifact coverage_percent.txt
+fi
 run_conditional_gate test_race run_race_tests
-start_parallel_gate migration_safety check_migrations
-start_parallel_gate prompt_evals check_prompt_evals
-start_parallel_gate spec_registry check_spec_registry
+gate_enabled migration_safety && start_parallel_gate migration_safety check_migrations
+gate_enabled prompt_evals && start_parallel_gate prompt_evals check_prompt_evals
+gate_enabled spec_registry && start_parallel_gate spec_registry check_spec_registry
 finish_parallel_batch
-seal_artifact spec_registry.json
+gate_enabled spec_registry && seal_artifact spec_registry.json
 
 run_conditional_gate benchmarks run_selected_benchmarks
-if [[ -f "$ARTIFACT_DIR/bench/current.txt" ]]; then
+if gate_enabled benchmarks && [[ -f "$ARTIFACT_DIR/bench/current.txt" ]]; then
   seal_artifact bench/current.txt
   seal_artifact bench/base.txt
   seal_artifact bench/benchstat.txt

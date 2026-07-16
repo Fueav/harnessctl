@@ -13,9 +13,15 @@
 
 EVIDENCE_TOOL="$ENGINE_DIR/lib/evidence.py"
 CONFIG_TOOL="$ENGINE_DIR/lib/harness_config.py"
+if declare -A ENABLED_GATES 2>/dev/null; then
+  GATE_MAP_ASSOCIATIVE=1
+else
+  ENABLED_GATES=()
+  GATE_MAP_ASSOCIATIVE=0
+fi
 
 runner_init() {
-  local configured_artifacts
+  local configured_artifacts configured_gates gate
   PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S "$EVIDENCE_TOOL" mutable-root \
     --repo "$ROOT_DIR" --path "$ARTIFACT_DIR_RAW" --prefix .artifacts --invalidate \
     >/dev/null || exit 2
@@ -58,6 +64,33 @@ runner_init() {
   CLEAN_BEFORE=unknown
   if is_clean; then CLEAN_BEFORE=true; elif [[ "$?" == 1 ]]; then CLEAN_BEFORE=false; fi
   trap runner_summary_on_exit EXIT
+  if ! configured_gates="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+    "$CONFIG_TOOL" profile-gates --profile "$RUNNER_PROFILE")"; then
+    FAILURE_REASON="invalid verification profile: $RUNNER_PROFILE"
+    printf 'cannot load configured gates for profile %s\n' "$RUNNER_PROFILE" >&2
+    return 2
+  fi
+  ENABLED_GATES=()
+  while IFS= read -r gate; do
+    [[ -n "$gate" ]] || continue
+    if (( GATE_MAP_ASSOCIATIVE == 1 )); then
+      ENABLED_GATES["$gate"]=1
+    else
+      ENABLED_GATES[${#ENABLED_GATES[@]}]="$gate"
+    fi
+  done <<<"$configured_gates"
+}
+
+gate_enabled() {
+  local gate
+  if (( GATE_MAP_ASSOCIATIVE == 1 )); then
+    [[ -n "${ENABLED_GATES[$1]+configured}" ]]
+    return
+  fi
+  for gate in "${ENABLED_GATES[@]}"; do
+    [[ "$gate" == "$1" ]] && return 0
+  done
+  return 1
 }
 
 is_clean() {

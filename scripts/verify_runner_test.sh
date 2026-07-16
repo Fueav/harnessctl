@@ -37,6 +37,19 @@ if (runner_init; status=$?; trap - EXIT; exit "$status"); then
   fail "runner_init ignored a failed artifacts query"
 fi
 
+cat >"$TMP_DIR/profile-gates-query-fails.py" <<'PY'
+import sys
+if sys.argv[1] == "artifacts":
+    raise SystemExit(0)
+if sys.argv[1] == "profile-gates":
+    raise SystemExit(23)
+raise SystemExit(2)
+PY
+CONFIG_TOOL="$TMP_DIR/profile-gates-query-fails.py"
+if (runner_init; status=$?; trap - EXIT; exit "$status"); then
+  fail "runner_init ignored a failed profile-gates query"
+fi
+
 ARTIFACT_DIR="$TMP_DIR/artifacts"
 SNAPSHOT_FILE="$ARTIFACT_DIR/change_scope.json"
 SNAPSHOT_SHA256="$(printf 'a%.0s' {1..64})"

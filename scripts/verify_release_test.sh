@@ -989,6 +989,124 @@ assert gate["status"] == "passed", payload
 PY
 }
 
+test_member_driven_gate_execution() {
+  setup_repo member-driven-change-custom
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["custom_gates"] = {
+    "spec_contract": {"run": "scripts/gates/spec_contract.sh"},
+}
+policy["gate_sets"]["change"] = [
+    "change_scope", "ai_boundaries", "spec_contract",
+]
+policy["profiles"]["change"]["skippable_gates"] = []
+policy["evidence_sets"]["change"]["artifacts"].remove("spec_registry.json")
+policy["machine_status_artifacts"].remove("spec_registry.json")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  mkdir -p "$REPO/scripts/gates"
+  cat >"$REPO/scripts/gates/spec_contract.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'project Specification contract passed\n'
+SH
+  chmod +x "$REPO/scripts/gates/spec_contract.sh"
+  git -C "$REPO" add scripts/harness_profiles.json scripts/gates/spec_contract.sh
+  git -C "$REPO" commit -q -m "replace builtin spec registry"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_change.sh" >"$TMP_DIR/member-driven-change-custom.log" 2>&1 || \
+    fail "change profile without spec_registry failed"
+  python3 - "$REPO/.artifacts/change" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+assert summary["overall"] == "passed", summary
+assert [gate["name"] for gate in summary["gates"]] == [
+    "change_scope", "ai_boundaries", "spec_contract",
+], summary
+assert not (root / "spec_registry.json").exists(), summary
+PY
+
+  setup_repo member-driven-change-skips
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["gate_sets"]["change"] = [
+    "change_scope", "gofmt", "changed_package_tests", "ai_boundaries",
+]
+policy["profiles"]["change"]["skippable_gates"] = [
+    "gofmt", "changed_package_tests",
+]
+policy["evidence_sets"]["change"]["artifacts"].remove("spec_registry.json")
+policy["machine_status_artifacts"].remove("spec_registry.json")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  git -C "$REPO" add scripts/harness_profiles.json
+  git -C "$REPO" commit -q -m "trim change gates"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_change.sh" >"$TMP_DIR/member-driven-change-skips.log" 2>&1 || \
+    fail "trimmed no-Go change profile failed"
+  python3 - "$REPO/.artifacts/change/summary.json" <<'PY'
+import json
+import pathlib
+import sys
+
+summary = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert [gate["name"] for gate in summary["gates"]] == [
+    "change_scope", "gofmt", "changed_package_tests", "ai_boundaries",
+], summary
+assert [gate["name"] for gate in summary["gates"] if gate["status"] == "skipped"] == [
+    "gofmt", "changed_package_tests",
+], summary
+PY
+
+  setup_repo member-driven-release
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+for gate in ("symlinks", "migration_safety", "prompt_evals", "spec_registry"):
+    policy["gate_sets"]["release"].remove(gate)
+policy["evidence_sets"]["release"]["artifacts"].remove("spec_registry.json")
+policy["machine_status_artifacts"].remove("spec_registry.json")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  git -C "$REPO" add scripts/harness_profiles.json
+  git -C "$REPO" commit -q -m "trim release gates"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/member-driven-release.log" 2>&1 || \
+    fail "trimmed release profile failed"
+  python3 - "$REPO/.artifacts/release" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+summary = json.loads((root / "summary.json").read_text(encoding="utf-8"))
+omitted = {"symlinks", "migration_safety", "prompt_evals", "spec_registry"}
+assert summary["overall"] == "passed", summary
+assert omitted.isdisjoint(gate["name"] for gate in summary["gates"]), summary
+assert not (root / "spec_registry.json").exists(), summary
+for gate in omitted:
+    assert not (root / "logs" / f"{gate}.log").exists(), gate
+PY
+}
+
 extract_ci_compare_step() {
   python3 -B -E -S - "$ROOT_DIR/.github/actions/setup-harness/action.yml" "$1" <<'PY'
 import pathlib
@@ -1128,5 +1246,6 @@ test_invalid_policy_invalidates_prior_pass
 test_coverage_override_cannot_weaken_policy
 test_dirty_verify_change_is_non_release_evidence
 test_verify_change_selects_go_packages
+test_member_driven_gate_execution
 
 printf 'verify release tests passed\n'

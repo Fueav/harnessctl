@@ -46,24 +46,28 @@ recorded_run change_scope collect_scope
 seal_artifact change_scope.json
 if ! select_changed_packages; then
   for gate in toolchain gofmt vet golangci; do
-    recorded_skip "$gate" "Go package selection failed"
+    gate_enabled "$gate" && recorded_skip "$gate" "Go package selection failed"
   done
-  recorded_run changed_package_tests report_package_selection_failure
+  gate_enabled changed_package_tests && \
+    recorded_run changed_package_tests report_package_selection_failure
 elif [[ ! -s "$PACKAGES_FILE" ]]; then
   for gate in toolchain gofmt vet golangci changed_package_tests; do
-    recorded_skip "$gate" "no changed Go files"
+    gate_enabled "$gate" && recorded_skip "$gate" "no changed Go files"
   done
 else
-  recorded_run toolchain ensure_tools go gofmt golangci-lint
-  recorded_run gofmt check_gofmt
-  recorded_run vet go vet ./...
-  recorded_run golangci golangci-lint run ./...
-  recorded_run changed_package_tests run_changed_package_tests
+  gate_enabled toolchain && recorded_run toolchain ensure_tools go gofmt golangci-lint
+  gate_enabled gofmt && recorded_run gofmt check_gofmt
+  gate_enabled vet && recorded_run vet go vet ./...
+  gate_enabled golangci && recorded_run golangci golangci-lint run ./...
+  gate_enabled changed_package_tests && \
+    recorded_run changed_package_tests run_changed_package_tests
 fi
 recorded_run ai_boundaries check_boundaries
 seal_artifact ai_boundaries.json
-recorded_run spec_registry check_spec_registry
-seal_artifact spec_registry.json
+if gate_enabled spec_registry; then
+  recorded_run spec_registry check_spec_registry
+  seal_artifact spec_registry.json
+fi
 run_custom_gates
 
 runner_complete
