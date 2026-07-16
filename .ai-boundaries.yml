@@ -11,6 +11,8 @@ approval_required:
   - cli.go
   - cli_test.go
   - cmd/
+  - custom_gates_cli_test.go
+  - docs/
   - go.mod
   - go.sum
   - scripts/
