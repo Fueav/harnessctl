@@ -1,5 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "custom_gates": {},
+  "symlinks": [
+    {"link": "CLAUDE.md", "target": "AGENTS.md"},
+    {"link": ".claude/skills", "target": ".agents/skills"},
+    {"link": "internal/risk/CLAUDE.md", "target": "internal/risk/AGENTS.md"},
+    {"link": "internal/ledger/CLAUDE.md", "target": "internal/ledger/AGENTS.md"}
+  ],
   "coverage_threshold": 70.0,
   "unsealed_artifacts": ["gates.tsv"],
   "gate_sets": {

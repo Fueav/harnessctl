@@ -15,6 +15,7 @@ EVIDENCE_TOOL="$ENGINE_DIR/lib/evidence.py"
 CONFIG_TOOL="$ENGINE_DIR/lib/harness_config.py"
 
 runner_init() {
+  local configured_artifacts
   PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S "$EVIDENCE_TOOL" mutable-root \
     --repo "$ROOT_DIR" --path "$ARTIFACT_DIR_RAW" --prefix .artifacts --invalidate \
     >/dev/null || exit 2
@@ -38,9 +39,16 @@ runner_init() {
 
   mkdir -p "$ARTIFACT_DIR" "$TOOLS_DIR"
   rm -rf "$ARTIFACT_DIR/logs" "$ARTIFACT_DIR/bench" "$GATE_RESULTS_DIR"
-  while IFS= read -r relative; do
-    [[ -n "$relative" ]] && rm -f "$ARTIFACT_DIR/$relative"
-  done < <(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S "$CONFIG_TOOL" artifacts)
+  if ! configured_artifacts="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+    "$CONFIG_TOOL" artifacts)"; then
+    printf 'cannot load configured artifacts\n' >&2
+    return 2
+  fi
+  if [[ -n "$configured_artifacts" ]]; then
+    while IFS= read -r relative; do
+      [[ -n "$relative" ]] && rm -f "$ARTIFACT_DIR/$relative"
+    done <<<"$configured_artifacts"
+  fi
   rm -f "$ARTIFACT_DIR/summary.json" "$ARTIFACT_DIR/artifact_manifest.json"
   mkdir -p "$ARTIFACT_DIR/logs" "$ARTIFACT_DIR/bench" "$GATE_RESULTS_DIR"
   : >"$GATES_FILE"
@@ -137,6 +145,49 @@ recorded_skip() {
   digest="$(file_sha256 "$ARTIFACT_DIR/$relative")"
   printf '%s\tskipped\t0\t%s\t%s\n' "$name" "$relative" "$digest" >>"$GATES_FILE"
   printf 'SKIP %s (%s)\n' "$name" "$reason"
+}
+
+run_custom_gate_command() {
+  local run="$1" script="$ROOT_DIR/$1"
+  if [[ -L "$script" || ! -f "$script" || ! -x "$script" ]]; then
+    printf 'custom gate script must be a regular non-symlink executable: %s\n' "$run" >&2
+    return 1
+  fi
+  env -u HARNESS_ENGINE_DIR \
+    HARNESS_PROJECT_ROOT="$ROOT_DIR" \
+    HARNESS_ARTIFACT_DIR="$ARTIFACT_DIR" \
+    HARNESS_SNAPSHOT_FILE="$SNAPSHOT_FILE" \
+    HARNESS_SNAPSHOT_SHA256="$SNAPSHOT_SHA256" \
+    HARNESS_COMPARE_SHA="$COMPARE_SHA" \
+    HARNESS_HEAD_SHA="$HEAD_SHA" \
+    HARNESS_PROFILE="$RUNNER_PROFILE" \
+    HARNESS_EVIDENCE_MODE="$RUNNER_EVIDENCE_MODE" \
+    "$script"
+}
+
+run_custom_gates() {
+  local name run artifact custom_output artifact_output
+  if ! custom_output="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+    "$CONFIG_TOOL" custom-gates --profile "$RUNNER_PROFILE")"; then
+    FAILURE_REASON="cannot load custom gates for profile $RUNNER_PROFILE"
+    printf '%s: %s\n' "$RUNNER_LABEL" "$FAILURE_REASON" >&2
+    return 2
+  fi
+  while IFS=$'\t' read -r name run; do
+    [[ -n "$name" && -n "$run" ]] || continue
+    recorded_run "$name" run_custom_gate_command "$run"
+    if ! artifact_output="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+      "$CONFIG_TOOL" gate-artifacts --gate "$name")"; then
+      FAILURE_REASON="cannot load artifact declarations for gate $name"
+      printf '%s: %s\n' "$RUNNER_LABEL" "$FAILURE_REASON" >&2
+      return 2
+    fi
+    if [[ -n "$artifact_output" ]]; then
+      while IFS= read -r artifact; do
+        [[ -n "$artifact" ]] && seal_artifact "$artifact"
+      done <<<"$artifact_output"
+    fi
+  done <<<"$custom_output"
 }
 
 start_parallel_gate() {

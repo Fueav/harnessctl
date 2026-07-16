@@ -64,5 +64,6 @@ recorded_run ai_boundaries check_boundaries
 seal_artifact ai_boundaries.json
 recorded_run spec_registry check_spec_registry
 seal_artifact spec_registry.json
+run_custom_gates
 
 runner_complete

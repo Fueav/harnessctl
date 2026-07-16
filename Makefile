@@ -1,9 +1,10 @@
 SHELL := /usr/bin/env bash
+VERSION ?= v0.2.0
 
 .PHONY: build test lint
 
 build:
-	go build ./cmd/harnessctl
+	go build -ldflags "-X main.version=$(VERSION)" ./cmd/harnessctl
 
 test:
 	go test ./...

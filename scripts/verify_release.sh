@@ -35,10 +35,33 @@ runner_cleanup_hook() {
 }
 
 check_symlinks() {
-  [[ -L "$ROOT_DIR/CLAUDE.md" && "$(readlink "$ROOT_DIR/CLAUDE.md")" == AGENTS.md ]]
-  [[ -L "$ROOT_DIR/.claude/skills" && "$(readlink "$ROOT_DIR/.claude/skills")" == ../.agents/skills ]]
-  [[ -L "$ROOT_DIR/internal/risk/CLAUDE.md" && "$(readlink "$ROOT_DIR/internal/risk/CLAUDE.md")" == AGENTS.md ]]
-  [[ -L "$ROOT_DIR/internal/ledger/CLAUDE.md" && "$(readlink "$ROOT_DIR/internal/ledger/CLAUDE.md")" == AGENTS.md ]]
+  local link target expected actual configured count=0
+  if ! configured="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
+    "$CONFIG_TOOL" symlinks)"; then
+    printf 'cannot load configured symlinks\n' >&2
+    return 1
+  fi
+  while IFS=$'\t' read -r link target; do
+    [[ -n "$link" && -n "$target" ]] || continue
+    count=$((count + 1))
+    [[ -L "$ROOT_DIR/$link" ]] || {
+      printf 'configured symlink is missing: %s\n' "$link" >&2
+      return 1
+    }
+    expected="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S - "$link" "$target" <<'PY'
+import posixpath
+import sys
+print(posixpath.relpath(sys.argv[2], posixpath.dirname(sys.argv[1]) or "."))
+PY
+)" || return 1
+    actual="$(readlink "$ROOT_DIR/$link")" || return 1
+    [[ "$actual" == "$expected" ]] || {
+      printf 'configured symlink %s points to %s, expected %s\n' \
+        "$link" "$actual" "$expected" >&2
+      return 1
+    }
+  done <<<"$configured"
+  (( count > 0 )) || printf 'no symlinks configured\n'
 }
 
 check_gitleaks() {
@@ -209,5 +232,6 @@ if [[ -f "$ARTIFACT_DIR/bench/current.txt" ]]; then
   seal_artifact bench/base.txt
   seal_artifact bench/benchstat.txt
 fi
+run_custom_gates
 recorded_run release_context_after check_final_context
 runner_complete

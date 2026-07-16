@@ -442,6 +442,33 @@ PY
 
 test_profile_selection_and_parallel_execution() {
   setup_repo pull-request-docs
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["custom_gates"] = {
+    "approval_check": {"run": "scripts/gates/approval_check.sh"},
+}
+policy["gate_sets"]["release"].insert(-1, "approval_check")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  mkdir -p "$REPO/scripts/gates"
+  cat >"$REPO/scripts/gates/approval_check.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'approval-compatible custom gate passed\n'
+SH
+  chmod +x "$REPO/scripts/gates/approval_check.sh"
+  git -C "$REPO" add scripts/harness_profiles.json scripts/gates/approval_check.sh
+  git -C "$REPO" commit -q -m "configure approval custom gate"
+  BASE="$(git -C "$REPO" rev-parse HEAD)"
+  printf 'candidate change\n' >"$REPO/docs/candidate.txt"
+  git -C "$REPO" add docs/candidate.txt
+  git -C "$REPO" commit -q -m "candidate change"
+  HEAD_SHA="$(git -C "$REPO" rev-parse HEAD)"
   env VERIFY_COMPARE_REF="$BASE" \
     FAKE_REPO_ROOT="$REPO" \
     "$REPO/scripts/verify_candidate.sh" >"$TMP_DIR/pr-docs.log" 2>&1 || \
@@ -457,6 +484,7 @@ assert payload["mode"] == "candidate", payload
 assert payload["release_ready"] is False, payload
 assert gates["test_race"]["status"] == "skipped", gates
 assert gates["benchmarks"]["status"] == "skipped", gates
+assert gates["approval_check"]["status"] == "passed", gates
 assert "no protected financial paths changed" in pathlib.Path(
     sys.argv[1]
 ).parent.joinpath(gates["test_race"]["log_path"]).read_text(encoding="utf-8")
@@ -561,6 +589,82 @@ import sys
 payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 names = [item["name"] for item in payload["gates"]]
 assert names.index("gofmt") < names.index("build") < names.index("vet") < names.index("golangci"), names
+PY
+}
+
+test_configured_and_legacy_symlinks() {
+  setup_repo configured-symlinks
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["symlinks"] = [{"link": "docs/CURRENT.md", "target": "docs/TARGET.md"}]
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  rm -f \
+    "$REPO/CLAUDE.md" \
+    "$REPO/.claude/skills" \
+    "$REPO/internal/risk/CLAUDE.md" \
+    "$REPO/internal/ledger/CLAUDE.md"
+  printf 'target\n' >"$REPO/docs/TARGET.md"
+  ln -s TARGET.md "$REPO/docs/CURRENT.md"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -q -m "configure project symlinks"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/configured-symlinks.log" 2>&1 || \
+    fail "configured symlink pair failed"
+
+  setup_repo legacy-v1-symlinks
+  python3 - "$REPO/scripts/harness_profiles.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+policy = json.loads(path.read_text(encoding="utf-8"))
+policy["schema_version"] = 1
+policy.pop("custom_gates")
+policy.pop("symlinks")
+path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
+PY
+  git -C "$REPO" add scripts/harness_profiles.json
+  git -C "$REPO" commit -q -m "use legacy v1 profile"
+  env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/legacy-v1-symlinks.log" 2>&1 || \
+    fail "legacy v1 symlink pairs failed"
+}
+
+test_failed_symlink_config_query_fails_gate() {
+  local real_python
+  setup_repo failed-symlink-query
+  real_python="$(command -v python3)"
+  cat >"$REPO/.tools/bin/python3" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+for argument in "\$@"; do
+  if [[ "\$argument" == symlinks ]]; then
+    printf 'forced symlink config query failure\n' >&2
+    exit 23
+  fi
+done
+exec "$real_python" "\$@"
+SH
+  chmod +x "$REPO/.tools/bin/python3"
+  if env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
+    "$REPO/scripts/verify_release.sh" >"$TMP_DIR/failed-symlink-query.log" 2>&1; then
+    fail "release ignored a failed symlink config query"
+  fi
+  python3 - "$REPO/.artifacts/release/summary.json" <<'PY'
+import json
+import pathlib
+import sys
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+symlinks = next(item for item in payload["gates"] if item["name"] == "symlinks")
+assert payload["overall"] == "failed", payload
+assert symlinks["status"] == "failed", payload
 PY
 }
 
@@ -994,6 +1098,8 @@ test_missing_and_invalid_compare
 test_dirty_release_fails
 test_stable_release_and_failed_rerun
 test_profile_selection_and_parallel_execution
+test_configured_and_legacy_symlinks
+test_failed_symlink_config_query_fails_gate
 test_head_mutation_fails
 test_snapshot_gate_and_artifact_tampering_fail
 test_python_module_shadowing_is_ignored

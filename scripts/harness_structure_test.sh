@@ -33,7 +33,14 @@ root = pathlib.Path(sys.argv[1])
 policy = json.loads(
     (root / "scripts/harness_profiles.json").read_text(encoding="utf-8")
 )
-assert policy["schema_version"] == 1, policy
+assert policy["schema_version"] == 2, policy
+assert policy["custom_gates"] == {}, policy
+assert policy["symlinks"] == [
+    {"link": "CLAUDE.md", "target": "AGENTS.md"},
+    {"link": ".claude/skills", "target": ".agents/skills"},
+    {"link": "internal/risk/CLAUDE.md", "target": "internal/risk/AGENTS.md"},
+    {"link": "internal/ledger/CLAUDE.md", "target": "internal/ledger/AGENTS.md"},
+], policy
 profiles = policy["profiles"]
 expected_release = [
     "change_scope", "release_context_before", "toolchain", "symlinks",
@@ -78,6 +85,26 @@ done
 grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
+
+grep -Fq 'VERSION ?= v0.2.0' "$ROOT_DIR/Makefile" || \
+  fail "make build does not default to v0.2.0"
+grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
+  fail "make build does not inject the release version"
+for contract in \
+  'custom_gates' \
+  'schema_version": 2' \
+  'HARNESS_PROJECT_ROOT' \
+  'HARNESS_ARTIFACT_DIR' \
+  'HARNESS_SNAPSHOT_FILE' \
+  'HARNESS_SNAPSHOT_SHA256' \
+  'HARNESS_COMPARE_SHA' \
+  'HARNESS_HEAD_SHA' \
+  'HARNESS_PROFILE' \
+  'HARNESS_EVIDENCE_MODE' \
+  'HARNESS_ENGINE_DIR'; do
+  grep -Fq "$contract" "$ROOT_DIR/README.md" || \
+    fail "README is missing the custom-gate contract: $contract"
+done
 
 python3 -I -B -S - "$ROOT_DIR" <<'PY'
 import pathlib
