@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PREFLIGHT="$ROOT_DIR/scripts/workspace_preflight.sh"
+source "$ROOT_DIR/scripts/lib/safe_cleanup.sh"
 TMP_DIR="$(mktemp -d)"
+TMP_NAME="${TMP_DIR##*/}"
 REPO=""
 LINKED_WORKTREE=""
 
@@ -11,7 +13,7 @@ cleanup() {
   if [[ -n "$REPO" && -n "$LINKED_WORKTREE" && -d "$REPO/.git" ]]; then
     git -C "$REPO" worktree remove --force "$LINKED_WORKTREE" >/dev/null 2>&1 || true
   fi
-  rm -rf "$TMP_DIR"
+  safe_remove_tree "$TMP_DIR" "$(dirname "$TMP_DIR")" "$TMP_NAME"
 }
 
 trap cleanup EXIT

@@ -2,8 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/safe_cleanup.sh"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_NAME="${TMP_DIR##*/}"
+trap 'safe_remove_tree "$TMP_DIR" "$(dirname "$TMP_DIR")" "$TMP_NAME"' EXIT
 
 python3 -I -B -S - "$ROOT_DIR/scripts/changed_go_packages.py" "$TMP_DIR" <<'PY'
 import hashlib

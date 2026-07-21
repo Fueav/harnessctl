@@ -2,13 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/safe_cleanup.sh"
 TMP_DIR="$(mktemp -d)"
+TMP_NAME="${TMP_DIR##*/}"
 
 cleanup() {
   if [[ "${KEEP_VERIFY_RELEASE_TEST_TMP:-0}" == "1" ]]; then
     printf 'verify release test fixtures kept at %s\n' "$TMP_DIR" >&2
   else
-    rm -rf "$TMP_DIR"
+    safe_remove_tree "$TMP_DIR" "$(dirname "$TMP_DIR")" "$TMP_NAME"
   fi
 }
 
@@ -261,6 +263,7 @@ setup_repo() {
   cp "$ROOT_DIR/scripts/lib/change_scope.py" "$REPO/scripts/lib/change_scope.py"
   cp "$ROOT_DIR/scripts/lib/evidence.py" "$REPO/scripts/lib/evidence.py"
   cp "$ROOT_DIR/scripts/lib/harness_config.py" "$REPO/scripts/lib/harness_config.py"
+  cp "$ROOT_DIR/scripts/lib/safe_cleanup.sh" "$REPO/scripts/lib/safe_cleanup.sh"
   cp "$ROOT_DIR/scripts/lib/verify_runner.sh" "$REPO/scripts/lib/verify_runner.sh"
   cp "$ROOT_DIR/scripts/harness_profiles.json" "$REPO/scripts/harness_profiles.json"
   cp "$ROOT_DIR/scripts/check_ai_boundaries.py" "$REPO/scripts/check_ai_boundaries.py"
@@ -879,7 +882,7 @@ PY
   outside_tools="$TMP_DIR/outside-tools"
   mkdir -p "$outside_tools"
   printf 'preserve\n' >"$outside_tools/sentinel.txt"
-  rm -rf "$REPO/.tools"
+  safe_remove_tree "$REPO/.tools" "$REPO" .tools
   ln -s "$outside_tools" "$REPO/.tools"
   if env VERIFY_COMPARE_REF="$BASE" FAKE_REPO_ROOT="$REPO" \
     "$REPO/scripts/verify_release.sh" >"$TMP_DIR/tools-root-failure.log" 2>&1; then
