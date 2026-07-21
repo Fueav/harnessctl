@@ -1,6 +1,6 @@
 # harnessctl v0.3.0 — 成员驱动的内置 gate 与 boundary glob 实现规格
 
-状态:待实现。背景:agent_marketplace 采纳 v0.2.1 时触发两个硬冲突——内置 `spec_registry` 固定模板 spec 契约(`specs/index.json`、数组型 `workflow_classes`),内置 boundary parser 拒绝 `*.pem` 类 glob。二者都不能用 custom gate 绕过,因为 verify 脚本无条件执行同名内置 gate。
+状态:已实现（v0.3.0）。背景:agent_marketplace 采纳 v0.2.1 时触发两个硬冲突——内置 `spec_registry` 固定模板 spec 契约(`specs/index.json`、数组型 `workflow_classes`),内置 boundary parser 拒绝 `*.pem` 类 glob。二者都不能用 custom gate 绕过,因为 verify 脚本无条件执行同名内置 gate。
 
 ## 1. 设计决策(已定)
 

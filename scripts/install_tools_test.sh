@@ -2,10 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT_DIR/scripts/lib/safe_cleanup.sh"
 TMP_DIR="$(mktemp -d)"
+TMP_NAME="${TMP_DIR##*/}"
 
 cleanup() {
-  rm -rf "$TMP_DIR"
+  safe_remove_tree "$TMP_DIR" "$(dirname "$TMP_DIR")" "$TMP_NAME"
 }
 trap cleanup EXIT
 

@@ -17,6 +17,7 @@ unset \
   VERIFY_PERFORMANCE_REQUESTED \
   VERIFY_PROFILE
 
+"$ROOT_DIR/scripts/safe_cleanup_test.sh"
 "$ROOT_DIR/scripts/collect_changes_test.sh"
 "$ROOT_DIR/scripts/check_ai_boundaries_test.sh"
 "$ROOT_DIR/scripts/check_spec_registry_test.sh"

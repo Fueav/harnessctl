@@ -63,6 +63,61 @@ def load_json(path: pathlib.Path, label: str, errors: list[str]) -> Any:
         return {}
 
 
+def parse_workflow_manifest(manifest: Any, errors: list[str]) -> set[str]:
+    if not isinstance(manifest, dict):
+        errors.append("workflow manifest must be a JSON object")
+        return set()
+
+    version = manifest.get("version")
+    classes = manifest.get("workflow_classes")
+    if not isinstance(classes, list):
+        errors.append("workflow manifest must define a workflow_classes array")
+        return set()
+
+    workflow_ids: set[str] = set()
+    if version == 2:
+        for index, item in enumerate(classes):
+            if not isinstance(item, dict) or set(item) != WORKFLOW_FIELDS:
+                errors.append(
+                    f"workflow_classes[{index}] must use the legacy version 2 field set"
+                )
+                continue
+            workflow_id = item.get("id")
+            if not isinstance(workflow_id, str) or workflow_id in workflow_ids:
+                errors.append(
+                    f"workflow_classes[{index}] has an invalid or duplicate id"
+                )
+            else:
+                workflow_ids.add(workflow_id)
+            for field in WORKFLOW_FIELDS - {"id", "evidence"}:
+                if not isinstance(item.get(field), str) or not item[field].strip():
+                    errors.append(
+                        f"workflow_classes[{index}].{field} must be non-empty"
+                    )
+            if not isinstance(item.get("evidence"), list) or not item["evidence"]:
+                errors.append(
+                    f"workflow_classes[{index}].evidence must be non-empty"
+                )
+    elif version == 3:
+        for index, workflow_id in enumerate(classes):
+            if not isinstance(workflow_id, str) or not workflow_id.strip():
+                errors.append(
+                    f"workflow_classes[{index}] must be a non-empty workflow id"
+                )
+            elif workflow_id in workflow_ids:
+                errors.append(
+                    f"workflow_classes[{index}] has a duplicate workflow id"
+                )
+            else:
+                workflow_ids.add(workflow_id)
+    else:
+        errors.append("workflow manifest version must be 2 or 3")
+
+    if workflow_ids != REQUIRED_WORKFLOWS:
+        errors.append("workflow manifest must define exactly the four core workflows")
+    return workflow_ids
+
+
 def parse_frontmatter(path: pathlib.Path, errors: list[str]) -> dict[str, str]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -211,27 +266,7 @@ def main() -> int:
     manifest = load_json(
         repo / "docs/harness-workflows.json", "workflow manifest", errors
     )
-    workflow_ids: set[str] = set()
-    classes = manifest.get("workflow_classes") if isinstance(manifest, dict) else None
-    if manifest.get("version") != 2 or not isinstance(classes, list):
-        errors.append("workflow manifest must use version 2 and a workflow_classes array")
-        classes = []
-    for index, item in enumerate(classes):
-        if not isinstance(item, dict) or set(item) != WORKFLOW_FIELDS:
-            errors.append(f"workflow_classes[{index}] must use the compact field set")
-            continue
-        workflow_id = item.get("id")
-        if not isinstance(workflow_id, str) or workflow_id in workflow_ids:
-            errors.append(f"workflow_classes[{index}] has an invalid or duplicate id")
-        else:
-            workflow_ids.add(workflow_id)
-        for field in WORKFLOW_FIELDS - {"id", "evidence"}:
-            if not isinstance(item.get(field), str) or not item[field].strip():
-                errors.append(f"workflow_classes[{index}].{field} must be non-empty")
-        if not isinstance(item.get("evidence"), list) or not item["evidence"]:
-            errors.append(f"workflow_classes[{index}].evidence must be non-empty")
-    if workflow_ids != REQUIRED_WORKFLOWS:
-        errors.append("workflow manifest must define exactly the four core workflows")
+    workflow_ids = parse_workflow_manifest(manifest, errors)
 
     registry = load_json(repo / "specs/index.json", "spec registry", errors)
     registered = registry.get("specs") if isinstance(registry, dict) else None

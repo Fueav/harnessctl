@@ -35,7 +35,7 @@ runner_cleanup_hook() {
     grep -Fqx "worktree $BENCH_WORKTREE"; then
     git -C "$ROOT_DIR" worktree remove --force "$BENCH_WORKTREE" >/dev/null 2>&1 || true
   fi
-  rm -rf "$BENCH_WORKTREE"
+  safe_remove_tree "$BENCH_WORKTREE" "$ARTIFACT_DIR/bench" base-worktree
   git -C "$ROOT_DIR" worktree prune >/dev/null 2>&1 || true
 }
 
@@ -71,10 +71,10 @@ PY
 
 check_gitleaks() {
   local scan_dir="$ARTIFACT_DIR/gitleaks-tree"
-  rm -rf "$scan_dir"; mkdir -p "$scan_dir"
+  safe_remove_tree "$scan_dir" "$ARTIFACT_DIR" gitleaks-tree; mkdir -p "$scan_dir"
   git -C "$ROOT_DIR" archive --format=tar "$HEAD_SHA" | tar -xf - -C "$scan_dir"
   gitleaks detect --source "$scan_dir" --no-git --redact
-  rm -rf "$scan_dir"
+  safe_remove_tree "$scan_dir" "$ARTIFACT_DIR" gitleaks-tree
 }
 
 check_coverage() {

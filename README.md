@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.1
 ```
 
 Consumer repositories pin the same version in `harness/harness.lock`. The CLI refuses to execute when the running version and lock disagree.
@@ -22,7 +22,7 @@ harnessctl approval finalize --repo . [arguments]
 harnessctl install-tools --repo .
 ```
 
-The first release intentionally preserves the proven Python and shell engine behind a Go entrypoint. The engine is embedded in the binary and never written into consumer repositories. Internals can move to native Go incrementally without changing the consumer command contract.
+The release intentionally preserves the proven Python and shell engine behind a Go entrypoint. The engine is embedded in the binary and never written into consumer repositories. This is accepted implementation debt, not a migration target by itself. Move an internal component to Go only when reproducible security, distribution, reliability, or maintenance evidence justifies the change; preserve the CLI, lock, and evidence contracts and prove equivalence with the existing checker and integration suites.
 
 ## Consumer Boundary
 
@@ -53,7 +53,11 @@ Schema v2 adds repository-owned command gates and configured symlink pairs:
 
 Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. The gate name is added to a `gate_sets` sequence, and any output files are declared through the existing `gate_artifacts` map. Symlink `link` and `target` values are normalized paths relative to the repository root; the link itself may use the corresponding relative target (for example, `.claude/skills` resolves to `.agents/skills`).
 
-To migrate a v1 consumer, change `schema_version` to `2`, add `custom_gates` and `symlinks` (either may be empty), and update `harness/harness.lock` to `v0.3.0`. Schema v1 remains supported and receives the four v0.1.0 template symlink pairs during loading.
+To migrate a v1 consumer, change `schema_version` to `2`, add `custom_gates` and `symlinks` (either may be empty), and update `harness/harness.lock` to a compatible engine version. Schema v1 remains supported and receives the four v0.1.0 template symlink pairs during loading.
+
+## Workflow registry compatibility
+
+The `spec-registry` gate accepts the legacy version 2 workflow manifest and the version 3 compact class list. Version 2 preserves compatibility with existing consumers; version 3 contains only the four workflow IDs so the repository's workflow document can remain the sole semantic authority.
 
 ## Member-driven built-in gates
 

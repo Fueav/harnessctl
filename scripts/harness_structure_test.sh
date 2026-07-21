@@ -14,12 +14,16 @@ for relative in \
   scripts/harness_profiles.json \
   scripts/lib/harness_config.py \
   scripts/lib/evidence.py \
+  scripts/lib/safe_cleanup.sh \
   scripts/lib/verify_runner.sh \
   cli.go \
   cmd/harnessctl/main.go; do
   [[ -f "$ROOT_DIR/$relative" ]] || fail "missing shared runtime: $relative"
 done
 
+grep -Fq 'scripts/safe_cleanup_test.sh' \
+  "$ROOT_DIR/scripts/run_checker_self_tests.sh" || \
+  fail "safe cleanup helper is not registered in checker self-tests"
 grep -Fq 'scripts/check_spec_registry_test.sh' \
   "$ROOT_DIR/scripts/run_checker_self_tests.sh" || \
   fail "Specification registry checker is not registered in checker self-tests"
@@ -86,8 +90,8 @@ grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
 
-grep -Fq 'VERSION ?= v0.3.0' "$ROOT_DIR/Makefile" || \
-  fail "make build does not default to v0.3.0"
+grep -Fq 'VERSION ?= v0.3.1' "$ROOT_DIR/Makefile" || \
+  fail "make build does not default to v0.3.1"
 grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
   fail "make build does not inject the release version"
 for contract in \
@@ -116,8 +120,8 @@ for contract in \
   grep -Fq "$contract" "$ROOT_DIR/README.md" || \
     fail "README is missing the custom-gate contract: $contract"
 done
-grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.0' \
-  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.3.0"
+grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.1' \
+  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.3.1"
 
 python3 -I -B -S - "$ROOT_DIR" <<'PY'
 import pathlib

@@ -3,8 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKER="$ROOT_DIR/scripts/check_spec_registry.py"
+source "$ROOT_DIR/scripts/lib/safe_cleanup.sh"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_NAME="${TMP_DIR##*/}"
+trap 'safe_remove_tree "$TMP_DIR" "$(dirname "$TMP_DIR")" "$TMP_NAME"' EXIT
 
 fail() {
   printf '%s\n' "$1" >&2
@@ -14,6 +16,21 @@ fail() {
 write_manifest() {
   local repo="$1"
   mkdir -p "$repo/docs"
+  cat >"$repo/docs/harness-workflows.json" <<'JSON'
+{
+  "version": 3,
+  "workflow_classes": [
+    "HARNESS-FOCUSED-CHANGE",
+    "HARNESS-MAINTENANCE",
+    "HARNESS-SPEC-FIRST-FEATURE",
+    "HARNESS-VERIFICATION-INCIDENT"
+  ]
+}
+JSON
+}
+
+write_legacy_manifest() {
+  local repo="$1"
   cat >"$repo/docs/harness-workflows.json" <<'JSON'
 {
   "version": 2,
@@ -108,7 +125,7 @@ expect_failure() {
 }
 
 setup_repo valid
-run_check || fail "valid compact registry was rejected"
+run_check || fail "valid version 3 registry was rejected"
 python3 - "$REPO/.artifacts/spec_registry.json" <<'PY'
 import json
 import pathlib
@@ -124,6 +141,61 @@ assert payload["workflow_classes"] == [
 ], payload
 assert payload["specs"][0]["path"] == "specs/alpha/spec.md", payload
 PY
+
+setup_repo legacy_v2
+write_legacy_manifest "$REPO"
+git -C "$REPO" add docs/harness-workflows.json
+git -C "$REPO" commit -qm "use legacy workflow manifest"
+run_check || fail "valid legacy version 2 manifest was rejected"
+
+setup_repo duplicate_v3
+python3 - "$REPO/docs/harness-workflows.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["workflow_classes"].append("HARNESS-FOCUSED-CHANGE")
+path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+PY
+expect_failure "duplicate version 3 workflow passed" "duplicate workflow id"
+
+setup_repo object_in_v3
+write_legacy_manifest "$REPO"
+python3 - "$REPO/docs/harness-workflows.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["version"] = 3
+path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+PY
+expect_failure "semantic objects in version 3 passed" "must be a non-empty workflow id"
+
+setup_repo unsupported_version
+python3 - "$REPO/docs/harness-workflows.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["version"] = 4
+path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+PY
+expect_failure "unsupported workflow manifest version passed" "version must be 2 or 3"
+
+setup_repo missing_v3
+python3 - "$REPO/docs/harness-workflows.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["workflow_classes"].pop()
+path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+PY
+expect_failure "incomplete version 3 workflow set passed" "exactly the four core workflows"
 
 setup_repo invalid_workflow
 sed -i.bak 's/HARNESS-SPEC-FIRST-FEATURE/HARNESS-NOT-REAL/' \

@@ -117,12 +117,12 @@ func TestVerifyChangeRunsFromCentralEngineWithProjectPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	workflowManifest := `{
-  "version": 2,
+  "version": 3,
   "workflow_classes": [
-    {"id":"HARNESS-FOCUSED-CHANGE","use_when":"focused","artifact_policy":"none","verification":"focused","stop_rule":"done","evidence":["test"]},
-    {"id":"HARNESS-MAINTENANCE","use_when":"maintenance","artifact_policy":"checklist","verification":"checks","stop_rule":"no growth","evidence":["diff"]},
-    {"id":"HARNESS-SPEC-FIRST-FEATURE","use_when":"feature","artifact_policy":"spec","verification":"release","stop_rule":"approval","evidence":["spec"]},
-    {"id":"HARNESS-VERIFICATION-INCIDENT","use_when":"diagnosis","artifact_policy":"evidence","verification":"reproduce","stop_rule":"truth","evidence":["logs"]}
+    "HARNESS-FOCUSED-CHANGE",
+    "HARNESS-MAINTENANCE",
+    "HARNESS-SPEC-FIRST-FEATURE",
+    "HARNESS-VERIFICATION-INCIDENT"
   ]
 }`
 
@@ -150,6 +150,45 @@ func TestVerifyChangeRunsFromCentralEngineWithProjectPolicy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, ".artifacts/change/summary.json")); err != nil {
 		t.Fatalf("summary evidence missing: %v", err)
+	}
+}
+
+func TestSpecRegistryAcceptsLegacyVersionTwoThroughFacade(t *testing.T) {
+	repo := t.TempDir()
+	write := func(relative, contents string) {
+		t.Helper()
+		path := filepath.Join(repo, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("AGENTS.md", "# Fixture\n")
+	write("docs/harness-workflows.json", `{
+  "version": 2,
+  "workflow_classes": [
+    {"id":"HARNESS-FOCUSED-CHANGE","use_when":"focused","artifact_policy":"none","verification":"focused","stop_rule":"done","evidence":["test"]},
+    {"id":"HARNESS-MAINTENANCE","use_when":"maintenance","artifact_policy":"checklist","verification":"checks","stop_rule":"no growth","evidence":["diff"]},
+    {"id":"HARNESS-SPEC-FIRST-FEATURE","use_when":"feature","artifact_policy":"spec","verification":"release","stop_rule":"approval","evidence":["spec"]},
+    {"id":"HARNESS-VERIFICATION-INCIDENT","use_when":"diagnosis","artifact_policy":"evidence","verification":"reproduce","stop_rule":"truth","evidence":["logs"]}
+  ]
+}`)
+	write("harness/harness.lock", "{\"schema_version\":1,\"module\":\"github.com/Fueav/harnessctl\",\"version\":\"dev\"}\n")
+	write("harness/harness_profiles.json", "{}\n")
+	write("specs/index.json", "{\"version\":1,\"specs\":[]}\n")
+
+	var stdout, stderr bytes.Buffer
+	exitCode := Run([]string{
+		"check", "spec-registry", "--repo", repo,
+		"--artifact-dir", ".artifacts/change",
+	}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("legacy spec registry exit code = %d\nstdout:\n%s\nstderr:\n%s", exitCode, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".artifacts/change/spec_registry.json")); err != nil {
+		t.Fatalf("legacy spec registry evidence missing: %v", err)
 	}
 }
 

@@ -12,7 +12,7 @@
 : "${RUNNER_COVERAGE_THRESHOLD:=}"
 
 EVIDENCE_TOOL="$ENGINE_DIR/lib/evidence.py"
-CONFIG_TOOL="$ENGINE_DIR/lib/harness_config.py"
+CONFIG_TOOL="$ENGINE_DIR/lib/harness_config.py"; source "$ENGINE_DIR/lib/safe_cleanup.sh"
 if declare -A ENABLED_GATES 2>/dev/null; then
   GATE_MAP_ASSOCIATIVE=1
 else
@@ -44,7 +44,7 @@ runner_init() {
   PARALLEL_GATE_NAMES=() PARALLEL_GATE_PIDS=() PARALLEL_GATE_RESULTS=()
 
   mkdir -p "$ARTIFACT_DIR" "$TOOLS_DIR"
-  rm -rf "$ARTIFACT_DIR/logs" "$ARTIFACT_DIR/bench" "$GATE_RESULTS_DIR"
+  safe_remove_children "$ARTIFACT_DIR" logs bench gate-results
   if ! configured_artifacts="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
     "$CONFIG_TOOL" artifacts)"; then
     printf 'cannot load configured artifacts\n' >&2
@@ -252,7 +252,7 @@ finish_parallel_batch() {
     fi
   done
   PARALLEL_GATE_NAMES=(); PARALLEL_GATE_PIDS=(); PARALLEL_GATE_RESULTS=()
-  rm -rf "$GATE_RESULTS_DIR"; mkdir -p "$GATE_RESULTS_DIR"
+  safe_remove_tree "$GATE_RESULTS_DIR" "$ARTIFACT_DIR" gate-results; mkdir -p "$GATE_RESULTS_DIR"
   return "$status"
 }
 
