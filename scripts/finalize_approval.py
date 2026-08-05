@@ -39,6 +39,7 @@ from lib.evidence import (
 from lib.harness_config import (
     ConfigError,
     POLICY,
+    conditional_gates,
     gate_decision,
     profile_gates,
     required_evidence,
@@ -267,9 +268,7 @@ def _validate_machine_evidence(
         if scope.get(scope_key) != git_identity.get(git_key):
             raise FinalizationError(f"candidate change snapshot disagrees with summary identity {git_key}")
 
-    for gate in ("test_race", "benchmarks"):
-        if gate not in required_gates:
-            continue
+    for gate in conditional_gates("pull_request"):
         required, _ = gate_decision(
             "pull_request", gate, trusted_scope["changes"], repo,
             trusted_scope["base_sha"], trusted_scope["head_sha"],

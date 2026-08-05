@@ -208,7 +208,19 @@ run_custom_gates() {
   fi
   while IFS=$'\t' read -r name run; do
     [[ -n "$name" && -n "$run" ]] || continue
-    recorded_run "$name" run_custom_gate_command "$run"
+    local reason status
+    if reason="$(runner_gate_reason "$name")"; then
+      recorded_run "$name" run_custom_gate_command "$run"
+    else
+      status=$?
+      [[ "$status" == 3 ]] || {
+        FAILURE_REASON="cannot select custom gate $name"
+        printf '%s: %s\n' "$RUNNER_LABEL" "$FAILURE_REASON" >&2
+        return 2
+      }
+      recorded_skip "$name" "$reason"
+      continue
+    fi
     if ! artifact_output="$(PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S \
       "$CONFIG_TOOL" gate-artifacts --gate "$name")"; then
       FAILURE_REASON="cannot load artifact declarations for gate $name"

@@ -37,7 +37,7 @@ root = pathlib.Path(sys.argv[1])
 policy = json.loads(
     (root / "scripts/harness_profiles.json").read_text(encoding="utf-8")
 )
-assert policy["schema_version"] == 2, policy
+assert policy["schema_version"] == 3, policy
 assert policy["custom_gates"] == {}, policy
 assert policy["symlinks"] == [
     {"link": "CLAUDE.md", "target": "AGENTS.md"},
@@ -46,6 +46,7 @@ assert policy["symlinks"] == [
     {"link": "internal/ledger/CLAUDE.md", "target": "internal/ledger/AGENTS.md"},
 ], policy
 profiles = policy["profiles"]
+assert set(profiles) == {"change", "pull_request", "release"}, profiles
 expected_release = [
     "change_scope", "release_context_before", "toolchain", "symlinks",
     "gofmt", "build", "vet", "golangci", "test_unit_coverage",
@@ -90,13 +91,15 @@ grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
 
-grep -Fq 'VERSION ?= v0.3.1' "$ROOT_DIR/Makefile" || \
-  fail "make build does not default to v0.3.1"
+grep -Fq 'VERSION ?= v0.4.0' "$ROOT_DIR/Makefile" || \
+  fail "make build does not default to v0.4.0"
 grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
   fail "make build does not inject the release version"
 for contract in \
   'custom_gates' \
-  'schema_version": 2' \
+  'schema_version": 3' \
+  'scaffold audit' \
+  'evidence verify' \
   'HARNESS_PROJECT_ROOT' \
   'HARNESS_ARTIFACT_DIR' \
   'HARNESS_SNAPSHOT_FILE' \
@@ -120,8 +123,8 @@ for contract in \
   grep -Fq "$contract" "$ROOT_DIR/README.md" || \
     fail "README is missing the custom-gate contract: $contract"
 done
-grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.1' \
-  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.3.1"
+grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.4.0' \
+  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.4.0"
 
 python3 -I -B -S - "$ROOT_DIR" <<'PY'
 import pathlib
@@ -138,11 +141,16 @@ paths = [
     "scripts/verify_release.sh",
     "scripts/write_release_summary.py",
     "scripts/finalize_approval.py",
+    "scripts/verify_evidence.py",
 ]
 count = sum(len((root / path).read_text(encoding="utf-8").splitlines()) for path in paths)
-if count > 2700:
-    raise SystemExit(f"production verification runtime is {count} lines; budget is 2700")
+if count > 3100:
+    raise SystemExit(f"production verification runtime is {count} lines; budget is 3100")
 print(f"production verification runtime: {count} lines")
+scaffold_count = len((root / "scaffold_audit.go").read_text(encoding="utf-8").splitlines())
+if scaffold_count > 500:
+    raise SystemExit(f"scaffold audit runtime is {scaffold_count} lines; budget is 500")
+print(f"scaffold audit runtime: {scaffold_count} lines")
 PY
 
 printf 'harness structure tests passed\n'

@@ -75,7 +75,7 @@ def _unique_strings(value: Any, label: str) -> Sequence[str]:
     return value
 
 
-def _validate_v2_extensions(policy: Dict[str, Any]) -> None:
+def _validate_extensions(policy: Dict[str, Any]) -> None:
     custom = policy["custom_gates"]
     if not isinstance(custom, dict):
         raise ConfigError("Harness profile policy has invalid custom gates")
@@ -96,6 +96,61 @@ def _validate_v2_extensions(policy: Dict[str, Any]) -> None:
             raise ConfigError("Harness profile policy has an invalid symlink pair")
         _relative(pair["link"], "Harness symlink link")
         _relative(pair["target"], "Harness symlink target")
+
+
+def _validate_conditional_gates(policy: Dict[str, Any], schema_version: int) -> None:
+    conditions = policy["conditional_gates"]
+    custom = set(policy["custom_gates"])
+    if schema_version < 3 and set(conditions) != {"test_race", "benchmarks"}:
+        raise ConfigError("Harness profile policy has invalid conditional gates")
+    if schema_version == 3:
+        unknown = set(conditions) - ({"test_race", "benchmarks"} | custom)
+        if unknown or not {"test_race", "benchmarks"}.issubset(conditions):
+            raise ConfigError("Harness profile policy has invalid conditional gates")
+    profiles = set(policy["profiles"])
+    for gate, rule in conditions.items():
+        required = {"always_profiles", "path_prefixes", "skip_reason"}
+        benchmark = {"benchmark_file_suffix", "benchmark_declaration", "explicit_request"}
+        if gate == "benchmarks":
+            required |= benchmark
+        allowed = required | (benchmark if gate == "benchmarks" else set())
+        if not isinstance(rule, dict) or not required.issubset(rule) or set(rule) - allowed:
+            raise ConfigError(f"Harness conditional gate {gate!r} has an invalid rule")
+        always = _unique_strings(
+            rule["always_profiles"], f"Harness conditional gate {gate!r} profiles"
+        )
+        if not set(always).issubset(profiles):
+            raise ConfigError(f"Harness conditional gate {gate!r} references an unknown profile")
+        for profile_name in always:
+            gate_set = policy["profiles"][profile_name]["gate_set"]
+            if gate not in policy["gate_sets"][gate_set]:
+                raise ConfigError(
+                    f"Harness conditional gate {gate!r} is not in profile {profile_name!r}"
+                )
+        prefixes = _unique_strings(
+            rule["path_prefixes"], f"Harness conditional gate {gate!r} path prefixes"
+        )
+        for prefix in prefixes:
+            if not prefix or any(character in prefix for character in "\t\r\n\\"):
+                raise ConfigError(f"Harness conditional gate {gate!r} has an invalid path prefix")
+            path = pathlib.PurePosixPath(prefix)
+            comparable = prefix[:-1] if prefix.endswith("/") else prefix
+            if (
+                path.is_absolute()
+                or any(part in ("", ".", "..") for part in path.parts)
+                or path.as_posix() != comparable
+            ):
+                raise ConfigError(f"Harness conditional gate {gate!r} has an invalid path prefix")
+        if not isinstance(rule["skip_reason"], str) or not rule["skip_reason"].strip():
+            raise ConfigError(f"Harness conditional gate {gate!r} has an invalid skip reason")
+        if gate == "benchmarks" and (
+            not isinstance(rule["benchmark_file_suffix"], str)
+            or not rule["benchmark_file_suffix"]
+            or not isinstance(rule["benchmark_declaration"], str)
+            or not rule["benchmark_declaration"]
+            or type(rule["explicit_request"]) is not bool
+        ):
+            raise ConfigError("Harness benchmark condition has an invalid contract")
 
 def _validate_gate_sets(policy: Dict[str, Any]) -> None:
     custom = policy["custom_gates"]
@@ -141,7 +196,7 @@ def load_policy() -> Dict[str, Any]:
         raise ConfigError("Harness profile policy has an invalid schema")
     schema_version = policy["schema_version"]
     required = V1_KEYS if schema_version == 1 else V1_KEYS | {"custom_gates", "symlinks"}
-    if schema_version not in (1, 2) or set(policy) != required:
+    if schema_version not in (1, 2, 3) or set(policy) != required:
         raise ConfigError("Harness profile policy has an invalid schema")
     mapping_keys = (
         "conditional_gates", "evidence", "evidence_sets", "gate_artifacts",
@@ -149,13 +204,18 @@ def load_policy() -> Dict[str, Any]:
     )
     if any(not isinstance(policy.get(key), dict) for key in mapping_keys):
         raise ConfigError("Harness profile policy has invalid gates")
-    if schema_version == 2:
-        _validate_v2_extensions(policy)
+    if schema_version in (2, 3):
+        _validate_extensions(policy)
     else:
         policy["custom_gates"] = {}
         policy["symlinks"] = [dict(pair) for pair in LEGACY_SYMLINKS]
     _validate_gate_sets(policy)
-    if set(policy["profiles"]) != {"change", "pull_request", "nightly", "release"}:
+    expected_profiles = (
+        {"change", "pull_request", "nightly", "release"}
+        if schema_version in (1, 2)
+        else {"change", "pull_request", "release"}
+    )
+    if set(policy["profiles"]) != expected_profiles:
         raise ConfigError("Harness profile policy has an invalid profile set")
     for name, profile in policy["profiles"].items():
         gate_set = profile.get("gate_set") if isinstance(profile, dict) else None
@@ -178,7 +238,7 @@ def load_policy() -> Dict[str, Any]:
         )
         if not set(skips).issubset(gates):
             raise ConfigError(f"Harness profile {name!r} skips unknown gates")
-        if schema_version == 2 and set(skips) & set(policy["custom_gates"]):
+        if schema_version in (2, 3) and set(skips) & set(policy["custom_gates"]):
             raise ConfigError(f"Harness profile {name!r} skips a custom gate")
     evidence_references = policy["evidence"].values()
     if (
@@ -187,8 +247,7 @@ def load_policy() -> Dict[str, Any]:
         or any(value not in policy["evidence_sets"] for value in policy["evidence"].values())
     ):
         raise ConfigError("Harness profile policy has invalid evidence sets")
-    if set(policy["conditional_gates"]) != {"test_race", "benchmarks"}:
-        raise ConfigError("Harness profile policy has invalid conditional gates")
+    _validate_conditional_gates(policy, schema_version)
     artifact_rules = list(policy["evidence_sets"].values()) + list(policy["gate_artifacts"].values())
     for rules in artifact_rules:
         paths = rules.get("artifacts") if isinstance(rules, dict) else None
@@ -219,7 +278,13 @@ def profile_gates(name: str) -> Tuple[str, ...]:
 
 
 def skippable_gates(name: str) -> Tuple[str, ...]:
-    return tuple(profile(name)["skippable_gates"])
+    gates = set(profile(name)["skippable_gates"])
+    gates.update(set(profile_gates(name)) & set(POLICY["conditional_gates"]))
+    return tuple(sorted(gates))
+
+
+def conditional_gates(name: str) -> Tuple[str, ...]:
+    return tuple(gate for gate in profile_gates(name) if gate in POLICY["conditional_gates"])
 
 
 def custom_gates(name: str) -> Tuple[Tuple[str, str], ...]:
@@ -283,21 +348,30 @@ def gate_decision(
     head_sha: str,
     performance_requested: bool = False,
 ) -> Tuple[bool, str]:
-    try:
-        rule = POLICY["conditional_gates"][gate]
-    except KeyError as error:
-        raise ConfigError(f"gate {gate!r} has no conditional policy") from error
+    rule = POLICY["conditional_gates"].get(gate)
+    if rule is None:
+        if gate in profile_gates(profile_name):
+            return True, "unconditional gate"
+        raise ConfigError(f"gate {gate!r} is not in profile {profile_name!r}")
     if profile_name in rule["always_profiles"]:
         return True, f"mandatory for {profile_name} profile"
     paths = [item.get("path") for item in changes if isinstance(item, Mapping)]
     matching = sorted(
         path for path in paths
-        if isinstance(path, str) and path.startswith(tuple(rule["path_prefixes"]))
+        if isinstance(path, str) and any(
+            path.startswith(prefix) if prefix.endswith("/") else path == prefix
+            for prefix in rule["path_prefixes"]
+        )
     )
     if matching:
-        label = "protected financial paths changed" if gate == "test_race" else "performance-sensitive paths changed"
+        if gate == "test_race":
+            label = "protected financial paths changed"
+        elif gate == "benchmarks":
+            label = "performance-sensitive paths changed"
+        else:
+            label = "configured paths changed"
         return True, f"{label}: {', '.join(matching)}"
-    if gate == "benchmarks" and performance_requested:
+    if gate == "benchmarks" and rule["explicit_request"] and performance_requested:
         return True, "explicit performance request"
     suffix = rule.get("benchmark_file_suffix")
     declaration = rule.get("benchmark_declaration", "").encode()
@@ -318,6 +392,8 @@ def _main() -> int:
     subparsers.add_parser("artifacts")
     custom = subparsers.add_parser("custom-gates")
     custom.add_argument("--profile", required=True)
+    conditional = subparsers.add_parser("conditional-gates")
+    conditional.add_argument("--profile", required=True)
     profile_gate_parser = subparsers.add_parser("profile-gates")
     profile_gate_parser.add_argument("--profile", required=True)
     gate_artifact_parser = subparsers.add_parser("gate-artifacts")
@@ -346,6 +422,9 @@ def _main() -> int:
         if args.command == "custom-gates":
             lines = (f"{name}\t{run}" for name, run in custom_gates(args.profile))
             sys.stdout.write("".join(f"{line}\n" for line in lines))
+            return 0
+        if args.command == "conditional-gates":
+            sys.stdout.write("".join(f"{gate}\n" for gate in conditional_gates(args.profile)))
             return 0
         if args.command == "profile-gates":
             sys.stdout.write("".join(f"{gate}\n" for gate in profile_gates(args.profile)))

@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.3.1
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.4.0
 ```
 
 Consumer repositories pin the same version in `harness/harness.lock`. The CLI refuses to execute when the running version and lock disagree.
@@ -18,6 +18,8 @@ harnessctl check spec-registry --repo . --compare-ref origin/main
 harnessctl verify change --repo .
 harnessctl verify candidate --repo .
 harnessctl verify release --repo .
+harnessctl evidence verify --repo . --evidence-dir /path/to/candidate-evidence
+harnessctl scaffold audit --template /path/to/clean-template --repo .
 harnessctl approval finalize --repo . [arguments]
 harnessctl install-tools --repo .
 ```
@@ -35,15 +37,22 @@ A consumer keeps only:
 
 Engine fixes and tests live here once and ship through versioned releases.
 
-## Profile schema v2
+## Profile schema v3
 
-Schema v2 adds repository-owned command gates and configured symlink pairs:
+Schema v3 keeps the v2 custom-gate and symlink contracts, allows custom gates to be selected by changed paths, and reduces verification to `change`, `pull_request`, and `release`. A nightly job invokes the `release` profile; it is a trigger, not a separate policy profile.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "custom_gates": {
     "openapi_hash": {"run": "scripts/gates/check_openapi_hash.sh"}
+  },
+  "conditional_gates": {
+    "openapi_hash": {
+      "always_profiles": ["release"],
+      "path_prefixes": ["api/", "openapi/"],
+      "skip_reason": "no API contract paths changed"
+    }
   },
   "symlinks": [
     {"link": "CLAUDE.md", "target": "AGENTS.md"}
@@ -51,9 +60,17 @@ Schema v2 adds repository-owned command gates and configured symlink pairs:
 }
 ```
 
-Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. The gate name is added to a `gate_sets` sequence, and any output files are declared through the existing `gate_artifacts` map. Symlink `link` and `target` values are normalized paths relative to the repository root; the link itself may use the corresponding relative target (for example, `.claude/skills` resolves to `.agents/skills`).
+Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. Add the gate name to a `gate_sets` sequence and declare outputs through `gate_artifacts`. A schema v3 custom gate may also appear in `conditional_gates`; the evidence ledger then records it independently as passed or skipped. Symlink `link` and `target` values are normalized paths relative to the repository root.
 
-To migrate a v1 consumer, change `schema_version` to `2`, add `custom_gates` and `symlinks` (either may be empty), and update `harness/harness.lock` to a compatible engine version. Schema v1 remains supported and receives the four v0.1.0 template symlink pairs during loading.
+Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, remove the `nightly` profile, remove `nightly` from every `always_profiles` list, declare any path-selected custom gates, and update `harness/harness.lock` to v0.4.0.
+
+## Evidence reuse
+
+`harnessctl evidence verify` revalidates an existing candidate or release evidence directory against the current clean checkout. Reuse succeeds only when the engine, profile policy and other verifier inputs, HEAD and tree, compare SHA, merge base, gate decisions, artifact manifest, and seals still match. The command never edits the evidence directory or target repository. This permits a verified commit to move between worktrees or fast-forward branches without repeating the full release suite.
+
+## Scaffold convergence
+
+`harnessctl scaffold audit` compares a clean template checkout with a target using `harness/scaffold_manifest.json`. Exact copies and symlinks are checked mechanically; retired paths must be absent; manual merges and project overlays require current SHA-256 resolutions in the target's `harness/scaffold.lock`. The lock also pins the template commit and manifest digest. The command is read-only, emits deterministic JSON, returns 0 for convergence, 1 for drift, and 2 for invalid input.
 
 ## Workflow registry compatibility
 

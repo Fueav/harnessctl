@@ -20,6 +20,10 @@ source = json.loads((root / "scripts/harness_profiles.json").read_text(encoding=
 def as_v1():
     policy = copy.deepcopy(source)
     policy["schema_version"] = 1
+    policy["profiles"]["nightly"] = copy.deepcopy(policy["profiles"]["release"])
+    for rule in policy["conditional_gates"].values():
+        if "nightly" not in rule["always_profiles"]:
+            rule["always_profiles"].insert(0, "nightly")
     policy.pop("custom_gates", None)
     policy.pop("symlinks", None)
     return policy
@@ -39,6 +43,22 @@ def as_v2():
     policy["gate_sets"]["release"].insert(-1, "project_check")
     policy["gate_artifacts"]["project_check"] = {
         "artifacts": ["custom/project-check.json"],
+    }
+    return policy
+
+
+def as_v3():
+    policy = as_v2()
+    policy["schema_version"] = 3
+    policy["profiles"].pop("nightly")
+    for rule in policy["conditional_gates"].values():
+        rule["always_profiles"] = [
+            profile for profile in rule["always_profiles"] if profile != "nightly"
+        ]
+    policy["conditional_gates"]["project_check"] = {
+        "always_profiles": [],
+        "path_prefixes": ["docs/"],
+        "skip_reason": "project check is unrelated to this change",
     }
     return policy
 
@@ -65,13 +85,20 @@ def accepted(policy, *arguments):
     return result.stdout
 
 
-def rejected(label, mutate):
-    policy = as_v2()
+def rejected_policy(label, policy, mutate):
     mutate(policy)
     result = run(policy, "validate", "--profile", "change", "--mode", "change")
     assert result.returncode == 2, (label, result.returncode, result.stdout, result.stderr)
     assert "harness config:" in result.stderr, (label, result.stderr)
     assert "Traceback" not in result.stderr, (label, result.stderr)
+
+
+def rejected(label, mutate):
+    rejected_policy(label, as_v2(), mutate)
+
+
+def rejected_v3(label, mutate):
+    rejected_policy(label, as_v3(), mutate)
 
 
 v1 = as_v1()
@@ -105,6 +132,12 @@ assert accepted(v2, "symlinks") == (
 )
 assert "spec_registry.json" in accepted(v2, "artifacts").splitlines()
 
+v3 = as_v3()
+accepted(v3, "validate", "--profile", "change", "--mode", "change")
+assert accepted(v3, "conditional-gates", "--profile", "change").splitlines() == [
+    "project_check"
+]
+
 trimmed = as_v2()
 trimmed["gate_sets"]["change"].remove("toolchain")
 trimmed["gate_sets"]["change"].remove("spec_registry")
@@ -136,6 +169,18 @@ rejected("custom after release context", lambda p: (
     p["gate_sets"]["release"].remove("project_check"),
     p["gate_sets"]["release"].append("project_check"),
 ))
+rejected_v3("conditional unknown gate", lambda p: p["conditional_gates"].__setitem__(
+    "unknown_gate", {
+        "always_profiles": [], "path_prefixes": ["docs/"], "skip_reason": "not selected"
+    },
+))
+rejected_v3("conditional custom gate references unrelated profile", lambda p: (
+    p["gate_sets"]["release"].remove("project_check"),
+    p["conditional_gates"]["project_check"]["always_profiles"].append("release"),
+))
+rejected_v3("invalid benchmark request flag", lambda p: p["conditional_gates"][
+    "benchmarks"
+].__setitem__("explicit_request", "yes"))
 rejected("missing v2 key", lambda p: p.pop("symlinks"))
 rejected("extra v2 key", lambda p: p.__setitem__("extra", True))
 rejected("invalid custom name", lambda p: (

@@ -65,6 +65,38 @@ func newCustomGateFixture(t *testing.T, kind string) customGateFixture {
 	policy["schema_version"] = float64(2)
 	policy["custom_gates"] = custom
 	policy["symlinks"] = []any{}
+	profiles := policy["profiles"].(map[string]any)
+	profiles["nightly"] = profiles["release"]
+	conditions := policy["conditional_gates"].(map[string]any)
+	for _, raw := range conditions {
+		rule := raw.(map[string]any)
+		always := rule["always_profiles"].([]any)
+		rule["always_profiles"] = append([]any{"nightly"}, always...)
+	}
+	if strings.HasPrefix(kind, "conditional-") {
+		policy["schema_version"] = float64(3)
+		delete(profiles, "nightly")
+		for _, raw := range conditions {
+			rule := raw.(map[string]any)
+			always := rule["always_profiles"].([]any)
+			filtered := make([]any, 0, len(always))
+			for _, profile := range always {
+				if profile != "nightly" {
+					filtered = append(filtered, profile)
+				}
+			}
+			rule["always_profiles"] = filtered
+		}
+		prefixes := []any{"docs/"}
+		if kind == "conditional-skip" {
+			prefixes = []any{"config/"}
+		}
+		conditions["project_check"] = map[string]any{
+			"always_profiles": []any{},
+			"path_prefixes":   prefixes,
+			"skip_reason":     "project check is unrelated to this change",
+		}
+	}
 	if kind == "passing" {
 		gateArtifacts := policy["gate_artifacts"].(map[string]any)
 		gateArtifacts["project_check"] = map[string]any{
@@ -95,7 +127,7 @@ func newCustomGateFixture(t *testing.T, kind string) customGateFixture {
 	write("harness/harness.lock", "{\"schema_version\":1,\"module\":\"github.com/Fueav/harnessctl\",\"version\":\"dev\"}\n", 0o644)
 
 	switch kind {
-	case "passing":
+	case "passing", "conditional-run", "conditional-skip":
 		write("scripts/gates/project_check.sh", `#!/usr/bin/env bash
 set -euo pipefail
 [[ "$PWD" == "$HARNESS_PROJECT_ROOT" ]]
@@ -221,6 +253,39 @@ func TestVerifyChangeRunsPassingCustomGateAndSealsEvidence(t *testing.T) {
 	}
 	if !sealed["custom/project-check.json"] {
 		t.Fatalf("custom artifact was not sealed: %v", sealed)
+	}
+}
+
+func TestVerifyChangeConditionallyRunsOrSkipsCustomGate(t *testing.T) {
+	for _, testCase := range []struct {
+		kind       string
+		wantStatus string
+	}{
+		{kind: "conditional-run", wantStatus: "passed"},
+		{kind: "conditional-skip", wantStatus: "skipped"},
+	} {
+		t.Run(testCase.kind, func(t *testing.T) {
+			fixture := newCustomGateFixture(t, testCase.kind)
+			exitCode, stdout, stderr := runFixtureChange(t, fixture)
+			if exitCode != 0 {
+				t.Fatalf("verify change exit code = %d\nstdout:\n%s\nstderr:\n%s", exitCode, stdout, stderr)
+			}
+			var summary struct {
+				Overall string `json:"overall"`
+				Gates   []struct {
+					Name   string `json:"name"`
+					Status string `json:"status"`
+				} `json:"gates"`
+			}
+			loadJSONFile(t, filepath.Join(fixture.repo, ".artifacts/change/summary.json"), &summary)
+			if summary.Overall != "passed" {
+				t.Fatalf("summary overall = %q", summary.Overall)
+			}
+			last := summary.Gates[len(summary.Gates)-1]
+			if last.Name != "project_check" || last.Status != testCase.wantStatus {
+				t.Fatalf("conditional gate = %+v, want status %q", last, testCase.wantStatus)
+			}
+		})
 	}
 }
 

@@ -2,7 +2,6 @@ package harnessctl
 
 import (
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -21,14 +20,34 @@ var engineFS embed.FS
 
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: harnessctl <command>")
+		fmt.Fprint(stderr, usageText())
 		return 2
+	}
+	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		fmt.Fprint(stdout, usageText())
+		return 0
 	}
 
 	switch args[0] {
 	case "version":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "harnessctl: version accepts no arguments")
+			return 2
+		}
 		fmt.Fprintf(stdout, "harnessctl %s\n", Version)
 		return 0
+	case "scaffold":
+		if len(args) < 2 || args[1] != "audit" {
+			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit")
+			return 2
+		}
+		return runScaffoldAudit(args[2:], stdout, stderr)
+	case "evidence":
+		if len(args) < 2 || args[1] != "verify" {
+			fmt.Fprintln(stderr, "harnessctl: evidence requires verify")
+			return 2
+		}
+		return runEngine("verify_evidence.py", args[2:], stdout, stderr)
 	case "check":
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, "harnessctl: check requires boundaries or spec-registry")
@@ -73,11 +92,36 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "install-tools":
 		return runEngine("install_tools.sh", args[1:], stdout, stderr)
 	case "workspace-preflight":
+		_, forwarded, err := projectRoot(args[1:])
+		if err != nil {
+			fmt.Fprintf(stderr, "harnessctl: %v\n", err)
+			return 2
+		}
+		if len(forwarded) != 0 {
+			fmt.Fprintln(stderr, "harnessctl: workspace-preflight received unexpected arguments")
+			return 2
+		}
 		return runEngine("workspace_preflight.sh", args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "harnessctl: unknown command %q\n", args[0])
 		return 2
 	}
+}
+
+func usageText() string {
+	return `usage: harnessctl <command>
+
+commands:
+  version
+  check boundaries|spec-registry
+  verify change|candidate|release
+  evidence verify
+  scaffold audit
+  approval finalize
+  collect changes
+  install-tools
+  workspace-preflight
+`
 }
 
 func runEngine(script string, arguments []string, stdout, stderr io.Writer) int {
@@ -145,9 +189,7 @@ func verifyProjectLock(repo string) error {
 		Module        string `json:"module"`
 		Version       string `json:"version"`
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&lock); err != nil {
+	if err := decodeStrictJSON(raw, &lock); err != nil {
 		return fmt.Errorf("parse harness/harness.lock: %w", err)
 	}
 	if lock.SchemaVersion != 1 || lock.Module != Module || lock.Version == "" {

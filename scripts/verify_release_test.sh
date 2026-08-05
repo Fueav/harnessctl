@@ -645,6 +645,10 @@ import sys
 path = pathlib.Path(sys.argv[1])
 policy = json.loads(path.read_text(encoding="utf-8"))
 policy["schema_version"] = 1
+policy["profiles"]["nightly"] = dict(policy["profiles"]["release"])
+for rule in policy["conditional_gates"].values():
+    if "nightly" not in rule["always_profiles"]:
+        rule["always_profiles"].insert(0, "nightly")
 policy.pop("custom_gates")
 policy.pop("symlinks")
 path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")

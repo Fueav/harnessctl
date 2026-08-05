@@ -71,6 +71,7 @@ if omit_conditionals == "1":
     for gate in ("test_race", "benchmarks"):
         policy["gate_sets"]["release"].remove(gate)
         policy["profiles"]["pull_request"]["skippable_gates"].remove(gate)
+        policy["conditional_gates"][gate]["always_profiles"].remove("release")
 path.write_text(json.dumps(policy, indent=2) + "\n", encoding="utf-8")
 PY
   printf 'base\n' >"$REPO/data.txt"

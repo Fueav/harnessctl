@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "custom_gates": {},
   "symlinks": [
     {"link": "CLAUDE.md", "target": "AGENTS.md"},
@@ -53,11 +53,6 @@
       "gate_set": "release",
       "skippable_gates": ["test_race", "benchmarks"]
     },
-    "nightly": {
-      "evidence_modes": ["release"],
-      "gate_set": "release",
-      "skippable_gates": []
-    },
     "release": {
       "evidence_modes": ["release"],
       "gate_set": "release",
@@ -66,12 +61,12 @@
   },
   "conditional_gates": {
     "test_race": {
-      "always_profiles": ["nightly", "release"],
+      "always_profiles": ["release"],
       "path_prefixes": ["internal/risk/", "internal/ledger/", "internal/clearing/"],
       "skip_reason": "no protected financial paths changed"
     },
     "benchmarks": {
-      "always_profiles": ["nightly", "release"],
+      "always_profiles": ["release"],
       "path_prefixes": [
         "internal/risk/",
         "internal/ledger/",

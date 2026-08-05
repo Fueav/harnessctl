@@ -41,6 +41,37 @@ func TestUnknownCommandFailsClosed(t *testing.T) {
 	}
 }
 
+func TestHelpIsDiscoverableAndVersionRejectsExtraArguments(t *testing.T) {
+	for _, args := range [][]string{{"help"}, {"--help"}, {"-h"}} {
+		var stdout, stderr bytes.Buffer
+		if exitCode := Run(args, &stdout, &stderr); exitCode != 0 {
+			t.Fatalf("Run(%v) exit code = %d, stderr = %q", args, exitCode, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "scaffold audit") || !strings.Contains(stdout.String(), "evidence verify") {
+			t.Fatalf("Run(%v) help is incomplete: %q", args, stdout.String())
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if exitCode := Run([]string{"version", "extra"}, &stdout, &stderr); exitCode != 2 {
+		t.Fatalf("Run(version extra) exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "version accepts no arguments") {
+		t.Fatalf("Run(version extra) stderr = %q", stderr.String())
+	}
+}
+
+func TestWorkspacePreflightRejectsUnconsumedArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := Run([]string{"workspace-preflight", "unexpected"}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("workspace-preflight extra argument exit code = %d, want 2", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "unexpected arguments") {
+		t.Fatalf("workspace-preflight stderr = %q", stderr.String())
+	}
+}
+
 func TestBoundaryCheckUsesCentralEngineAgainstProject(t *testing.T) {
 	repo := t.TempDir()
 	git := func(args ...string) {
@@ -210,5 +241,22 @@ func TestEngineRefusesVersionMismatchBeforeExecution(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "requires harnessctl v9.9.9") {
 		t.Fatalf("mismatched lock stderr = %q", stderr.String())
+	}
+}
+
+func TestEngineRejectsTrailingHarnessLockData(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := []byte("{\"schema_version\":1,\"module\":\"github.com/Fueav/harnessctl\",\"version\":\"dev\"}\n{}\n")
+	if err := os.WriteFile(filepath.Join(repo, "harness/harness.lock"), lock, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	exitCode := Run([]string{"check", "boundaries", "--repo", repo, "--base", "HEAD"}, &stdout, &stderr)
+	if exitCode != 2 || !strings.Contains(stderr.String(), "parse harness/harness.lock") {
+		t.Fatalf("trailing lock exit = %d, stderr = %q", exitCode, stderr.String())
 	}
 }

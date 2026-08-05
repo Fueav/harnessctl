@@ -1,5 +1,5 @@
 SHELL := /usr/bin/env bash
-VERSION ?= v0.3.1
+VERSION ?= v0.4.0
 
 .PHONY: build test lint
 
