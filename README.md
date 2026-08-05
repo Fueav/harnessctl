@@ -20,6 +20,8 @@ harnessctl verify candidate --repo .
 harnessctl verify release --repo .
 harnessctl evidence verify --repo . --evidence-dir /path/to/candidate-evidence
 harnessctl scaffold audit --template /path/to/clean-template --repo .
+harnessctl scaffold record --template /path/to/clean-template --repo . \
+  --resolution AGENTS.md=merged
 harnessctl approval finalize --repo . [arguments]
 harnessctl install-tools --repo .
 ```
@@ -70,7 +72,9 @@ Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, r
 
 ## Scaffold convergence
 
-`harnessctl scaffold audit` compares a clean template checkout with a target using `harness/scaffold_manifest.json`. Exact copies and symlinks are checked mechanically; retired paths must be absent; manual merges and project overlays require current SHA-256 resolutions in the target's `harness/scaffold.lock`. The lock also pins the template commit and manifest digest. The command is read-only, emits deterministic JSON, returns 0 for convergence, 1 for drift, and 2 for invalid input.
+`harnessctl scaffold record` renders a compact deterministic `harness/scaffold.lock` to stdout and never edits the target. Identical semantic paths are recorded automatically; unchanged prior resolutions are reused; every changed manual merge or project overlay requires an explicit `--resolution path=merged|preserved|adapted|relocated` decision.
+
+`harnessctl scaffold audit` then compares the clean template checkout with the target using `harness/scaffold_manifest.json`. Exact copies and symlinks are checked mechanically; retired paths must be absent; manual merges and project overlays must match the lock. The lock also pins the template commit and manifest digest. Audit is read-only, emits deterministic JSON, returns 0 for convergence, 1 for drift, and 2 for invalid input.
 
 ## Workflow registry compatibility
 

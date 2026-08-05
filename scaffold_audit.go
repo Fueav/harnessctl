@@ -120,33 +120,17 @@ func checkedScaffoldRoot(argument, label string) (string, error) {
 
 func auditScaffold(template, target string) (scaffoldAuditReport, error) {
 	report := scaffoldAuditReport{SchemaVersion: 1, Status: "drift", Paths: []scaffoldPathReport{}, Errors: []string{}}
-	clean, err := gitOutput(template, "status", "--porcelain=v1", "--untracked-files=all")
+	manifest, commit, manifestDigest, err := loadScaffoldSource(template)
 	if err != nil {
-		return report, fmt.Errorf("inspect template Git state: %w", err)
-	}
-	if clean != "" {
-		return report, errors.New("template checkout must be clean")
-	}
-	commit, err := gitOutput(template, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil || len(commit) != 40 {
-		return report, errors.New("template HEAD must resolve to a commit")
+		return report, err
 	}
 	report.TemplateCommit = commit
+	report.ManifestSHA256 = manifestDigest
 	targetState, err := gitOutput(target, "status", "--porcelain=v1", "--untracked-files=all")
 	if err != nil {
 		return report, fmt.Errorf("inspect target Git state: %w", err)
 	}
 	report.TargetDirty = targetState != ""
-
-	manifestRaw, err := readScaffoldRegular(template, "harness/scaffold_manifest.json")
-	if err != nil {
-		return report, fmt.Errorf("read template manifest: %w", err)
-	}
-	report.ManifestSHA256 = sha256Hex(manifestRaw)
-	var manifest scaffoldManifest
-	if err := decodeStrictJSON(manifestRaw, &manifest); err != nil || manifest.SchemaVersion != 1 {
-		return report, errors.New("template scaffold manifest has an invalid contract")
-	}
 
 	lock, lockErr := loadScaffoldLock(target)
 	resolutions := map[string]scaffoldResolution{}
@@ -282,6 +266,29 @@ func auditScaffold(template, target string) (scaffoldAuditReport, error) {
 		report.Status = "passed"
 	}
 	return report, nil
+}
+
+func loadScaffoldSource(template string) (scaffoldManifest, string, string, error) {
+	var manifest scaffoldManifest
+	clean, err := gitOutput(template, "status", "--porcelain=v1", "--untracked-files=all")
+	if err != nil {
+		return manifest, "", "", fmt.Errorf("inspect template Git state: %w", err)
+	}
+	if clean != "" {
+		return manifest, "", "", errors.New("template checkout must be clean")
+	}
+	commit, err := gitOutput(template, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || len(commit) != 40 {
+		return manifest, "", "", errors.New("template HEAD must resolve to a commit")
+	}
+	manifestRaw, err := readScaffoldRegular(template, "harness/scaffold_manifest.json")
+	if err != nil {
+		return manifest, "", "", fmt.Errorf("read template manifest: %w", err)
+	}
+	if err := decodeStrictJSON(manifestRaw, &manifest); err != nil || manifest.SchemaVersion != 1 {
+		return manifest, "", "", errors.New("template scaffold manifest has an invalid contract")
+	}
+	return manifest, commit, sha256Hex(manifestRaw), nil
 }
 
 func validateScaffoldManaged(managed scaffoldManagedPath, seen map[string]bool) error {

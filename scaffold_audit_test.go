@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,6 +114,25 @@ func runAudit(t *testing.T, fixture auditFixture) (int, scaffoldAuditReport, str
 	return exitCode, report, stderr.String()
 }
 
+func runRecord(t *testing.T, fixture auditFixture, resolutions ...string) (int, scaffoldLock, []byte, string) {
+	t.Helper()
+	arguments := []string{
+		"scaffold", "record", "--template", fixture.template, "--repo", fixture.target,
+	}
+	for _, resolution := range resolutions {
+		arguments = append(arguments, "--resolution", resolution)
+	}
+	var stdout, stderr bytes.Buffer
+	exitCode := Run(arguments, &stdout, &stderr)
+	var lock scaffoldLock
+	if stdout.Len() != 0 {
+		if err := json.Unmarshal(stdout.Bytes(), &lock); err != nil {
+			t.Fatalf("record output is not JSON: %v\nstdout=%q\nstderr=%q", err, stdout.String(), stderr.String())
+		}
+	}
+	return exitCode, lock, append([]byte(nil), stdout.Bytes()...), stderr.String()
+}
+
 func TestScaffoldAuditAcceptsResolvedManualAndProjectOverlayPaths(t *testing.T) {
 	fixture := newAuditFixture(t)
 	exitCode, report, stderr := runAudit(t, fixture)
@@ -121,6 +141,57 @@ func TestScaffoldAuditAcceptsResolvedManualAndProjectOverlayPaths(t *testing.T) 
 	}
 	if len(report.Errors) != 0 {
 		t.Fatalf("audit errors = %v", report.Errors)
+	}
+}
+
+func TestScaffoldRecordRendersAuditableLockWithoutEditingTarget(t *testing.T) {
+	fixture := newAuditFixture(t)
+	lockPath := filepath.Join(fixture.target, "harness/scaffold.lock")
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, lock, raw, stderr := runRecord(
+		t, fixture, "AGENTS.md=merged", "harness/policy.json=preserved",
+	)
+	if exitCode != 0 {
+		t.Fatalf("record exit = %d, stderr = %q", exitCode, stderr)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("record command edited target lock: %v", err)
+	}
+	if len(lock.ResolvedPaths) != 2 || lock.ResolvedPaths[0].Path != "AGENTS.md" {
+		t.Fatalf("recorded lock = %#v", lock)
+	}
+	if bytes.Count(raw, []byte("\n")) != 1 || bytes.Contains(raw, []byte("\n  ")) {
+		t.Fatalf("record output is not compact JSON: %q", raw)
+	}
+	encoded, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAuditFile(t, fixture.target, "harness/scaffold.lock", string(encoded)+"\n", 0o644)
+	exitCode, report, _ := runAudit(t, fixture)
+	if exitCode != 0 || !report.Converged {
+		t.Fatalf("generated lock did not converge: exit %d, report %#v", exitCode, report)
+	}
+}
+
+func TestScaffoldRecordRequiresDecisionForDifferingSemanticPath(t *testing.T) {
+	fixture := newAuditFixture(t)
+	if err := os.Remove(filepath.Join(fixture.target, "harness/scaffold.lock")); err != nil {
+		t.Fatal(err)
+	}
+	exitCode, _, _, stderr := runRecord(t, fixture, "AGENTS.md=merged")
+	if exitCode != 2 || !bytes.Contains([]byte(stderr), []byte("harness/policy.json")) {
+		t.Fatalf("record exit = %d, stderr = %q", exitCode, stderr)
+	}
+}
+
+func TestScaffoldRecordReusesUnchangedPriorDecisions(t *testing.T) {
+	fixture := newAuditFixture(t)
+	exitCode, lock, _, stderr := runRecord(t, fixture)
+	if exitCode != 0 || len(lock.ResolvedPaths) != 2 {
+		t.Fatalf("record exit = %d, lock = %#v, stderr = %q", exitCode, lock, stderr)
 	}
 }
 

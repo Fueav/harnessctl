@@ -99,6 +99,7 @@ for contract in \
   'custom_gates' \
   'schema_version": 3' \
   'scaffold audit' \
+  'scaffold record' \
   'evidence verify' \
   'HARNESS_PROJECT_ROOT' \
   'HARNESS_ARTIFACT_DIR' \
@@ -147,10 +148,13 @@ count = sum(len((root / path).read_text(encoding="utf-8").splitlines()) for path
 if count > 3100:
     raise SystemExit(f"production verification runtime is {count} lines; budget is 3100")
 print(f"production verification runtime: {count} lines")
-scaffold_count = len((root / "scaffold_audit.go").read_text(encoding="utf-8").splitlines())
-if scaffold_count > 500:
-    raise SystemExit(f"scaffold audit runtime is {scaffold_count} lines; budget is 500")
-print(f"scaffold audit runtime: {scaffold_count} lines")
+scaffold_count = sum(
+    len((root / path).read_text(encoding="utf-8").splitlines())
+    for path in ("scaffold_audit.go", "scaffold_record.go")
+)
+if scaffold_count > 650:
+    raise SystemExit(f"scaffold convergence runtime is {scaffold_count} lines; budget is 650")
+print(f"scaffold convergence runtime: {scaffold_count} lines")
 PY
 
 printf 'harness structure tests passed\n'

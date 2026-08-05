@@ -47,7 +47,7 @@ func TestHelpIsDiscoverableAndVersionRejectsExtraArguments(t *testing.T) {
 		if exitCode := Run(args, &stdout, &stderr); exitCode != 0 {
 			t.Fatalf("Run(%v) exit code = %d, stderr = %q", args, exitCode, stderr.String())
 		}
-		if !strings.Contains(stdout.String(), "scaffold audit") || !strings.Contains(stdout.String(), "evidence verify") {
+		if !strings.Contains(stdout.String(), "scaffold audit|record") || !strings.Contains(stdout.String(), "evidence verify") {
 			t.Fatalf("Run(%v) help is incomplete: %q", args, stdout.String())
 		}
 	}

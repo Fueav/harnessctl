@@ -37,11 +37,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "harnessctl %s\n", Version)
 		return 0
 	case "scaffold":
-		if len(args) < 2 || args[1] != "audit" {
-			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit")
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit or record")
 			return 2
 		}
-		return runScaffoldAudit(args[2:], stdout, stderr)
+		switch args[1] {
+		case "audit":
+			return runScaffoldAudit(args[2:], stdout, stderr)
+		case "record":
+			return runScaffoldRecord(args[2:], stdout, stderr)
+		default:
+			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit or record")
+			return 2
+		}
 	case "evidence":
 		if len(args) < 2 || args[1] != "verify" {
 			fmt.Fprintln(stderr, "harnessctl: evidence requires verify")
@@ -116,7 +124,7 @@ commands:
   check boundaries|spec-registry
   verify change|candidate|release
   evidence verify
-  scaffold audit
+  scaffold audit|record
   approval finalize
   collect changes
   install-tools

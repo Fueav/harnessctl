@@ -866,6 +866,7 @@ PY
 test_repository_policy_covers_all_tracked_paths() {
   python3 - "$ROOT_DIR" <<'PY'
 import pathlib
+import fnmatch
 import subprocess
 import sys
 
@@ -891,6 +892,8 @@ paths = [item.decode() for item in tracked if item]
 def matches(path, entry):
     if entry.endswith("/"):
         return path.startswith(entry)
+    if "/" not in entry and "*" in entry:
+        return fnmatch.fnmatchcase(pathlib.PurePosixPath(path).name, entry)
     return path == entry
 
 unclassified = [
