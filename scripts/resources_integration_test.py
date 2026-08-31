@@ -323,6 +323,12 @@ def main():
         if state()['runs'] or state()['environments']:
             raise RuntimeError('stopped dependencies with dead owners did not recover')
         cases.append('reboot_simulation_reclaims_stopped_owned_services_without_sql')
+        require(cli('run', extra=payload()))
+        shared = set(state()['environments'])
+        require(cli('run', extra=['--mode', 'fresh', *payload()]))
+        if state()['runs'] or set(state()['environments']) != shared:
+            raise RuntimeError('fresh cleanup removed an eligible idle shared environment')
+        cases.append('fresh_cleanup_preserves_the_reusable_idle_shared_pool')
         require(cli('gc', extra=['--all-idle']))
         require(cli('run', extra=['--mode', 'fresh', *payload()]))
         if state()['runs'] or state()['environments']:

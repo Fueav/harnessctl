@@ -161,6 +161,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.backend.runs, {})
         self.assertEqual(self.backend.environments, {})
 
+    def test_fresh_cleanup_does_not_consume_the_idle_shared_pool_retention_slot(self):
+        warm = self.manager.acquire('shared')
+        self.manager.release(warm['id'])
+        fresh = self.manager.acquire('fresh')
+        self.manager.release(fresh['id'])
+        self.assertEqual(set(self.backend.environments), {warm['environment']})
+        again = self.manager.acquire('shared')
+        self.assertEqual(again['environment'], warm['environment'])
+
     def test_storage_pressure_blocks_new_work_without_deleting_live_data(self):
         run = self.manager.acquire('shared')
         self.backend.bytes = self.config['limits']['max_storage_bytes'] + 1

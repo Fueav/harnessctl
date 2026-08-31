@@ -269,10 +269,13 @@ class Manager:
         active = {run['environment'] for run in state['runs'].values()}
         idle = sorted((env for env in state['environments'].values() if env['id'] not in active),
                       key=lambda env: env['last_used'], reverse=True)
-        for index, env in enumerate(idle):
+        retained = 0
+        for env in idle:
             expired = time.time() - env['last_used'] >= self.config['limits']['idle_seconds']
-            if env['id'] != keep and (all_idle or env['mode'] == 'fresh' or expired or index >= self.config['limits']['max_idle_environments']):
+            if env['id'] != keep and (all_idle or env['mode'] == 'fresh' or expired or retained >= self.config['limits']['max_idle_environments']):
                 self.destroy(state, env)
+            else:
+                retained += 1
 
     def budget(self, state):
         limit = self.config['limits']
