@@ -17,3 +17,13 @@ jobs:
           go-version-file: go.mod
       - run: go test ./...
       - run: scripts/run_checker_self_tests.sh
+      - run: go build -o /tmp/harnessctl ./cmd/harnessctl
+      - name: Verify real Docker lifecycle across worktrees
+        run: python3 scripts/resources_integration_test.py --binary /tmp/harnessctl --rounds 100 --output resource-acceptance.json
+        timeout-minutes: 15
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resource-lifecycle-acceptance
+          path: resource-acceptance.json
+          if-no-files-found: ignore

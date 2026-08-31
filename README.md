@@ -5,8 +5,10 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.4.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.5.0
 ```
+
+`resources run|status|gc` provides owned test services shared across Git worktrees, per-command data and bounded cleanup. Consumers declare `harness/dependencies.json`; see [the resource lifecycle contract](docs/test-resources.md).
 
 Consumer repositories pin the same version in `harness/harness.lock`. The CLI refuses to execute when the running version and lock disagree.
 
@@ -64,7 +66,7 @@ Schema v3 keeps the v2 custom-gate and symlink contracts, allows custom gates to
 
 Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. Add the gate name to a `gate_sets` sequence and declare outputs through `gate_artifacts`. A schema v3 custom gate may also appear in `conditional_gates`; the evidence ledger then records it independently as passed or skipped. Symlink `link` and `target` values are normalized paths relative to the repository root.
 
-Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, remove the `nightly` profile, remove `nightly` from every `always_profiles` list, declare any path-selected custom gates, and update `harness/harness.lock` to v0.4.0.
+Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, remove the `nightly` profile, remove `nightly` from every `always_profiles` list, declare any path-selected custom gates, and update `harness/harness.lock` to v0.5.0.
 
 ## Evidence reuse
 

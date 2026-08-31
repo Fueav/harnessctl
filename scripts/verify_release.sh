@@ -145,7 +145,7 @@ run_selected_benchmarks() {
 
 run_race_tests() {
   printf 'selection: %s\n' "$1"
-  go test -race ./...
+  run_with_test_resources go test -race ./...
 }
 
 check_initial_context() {
@@ -217,7 +217,7 @@ finish_parallel_batch
 
 if gate_enabled test_unit_coverage; then
   start_parallel_gate test_unit_coverage \
-    go test -coverpkg=./... -coverprofile="$ARTIFACT_DIR/coverage.out" ./...
+    run_with_test_resources go test -coverpkg=./... -coverprofile="$ARTIFACT_DIR/coverage.out" ./...
 fi
 gate_enabled govulncheck && start_parallel_gate govulncheck govulncheck ./...
 gate_enabled gitleaks && start_parallel_gate gitleaks check_gitleaks

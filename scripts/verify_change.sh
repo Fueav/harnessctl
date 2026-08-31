@@ -30,7 +30,7 @@ run_changed_package_tests() {
   local package
   while IFS= read -r -d '' package; do packages+=("$package"); done <"$PACKAGES_FILE"
   printf 'selected Go packages:\n'; printf '  %s\n' "${packages[@]}"
-  go test "${packages[@]}"
+  run_with_test_resources go test "${packages[@]}"
 }
 
 report_package_selection_failure() {

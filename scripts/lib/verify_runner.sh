@@ -13,6 +13,12 @@
 
 EVIDENCE_TOOL="$ENGINE_DIR/lib/evidence.py"
 CONFIG_TOOL="$ENGINE_DIR/lib/harness_config.py"; source "$ENGINE_DIR/lib/safe_cleanup.sh"
+run_with_test_resources() {
+  if [[ ! -e "$ROOT_DIR/harness/dependencies.json" ]]; then "$@"; return; fi
+  local mode=shared
+  [[ "$RUNNER_PROFILE" != release ]] || mode=fresh
+  "$ENGINE_DIR/resources.py" run --config "$ROOT_DIR/harness/dependencies.json" --mode "$mode" -- "$@"
+}
 if declare -A ENABLED_GATES 2>/dev/null; then
   GATE_MAP_ASSOCIATIVE=1
 else

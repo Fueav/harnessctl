@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 var Version = "dev"
@@ -29,17 +31,20 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "resources":
+		if len(args) < 2 || (args[1] != "run" && args[1] != "status" && args[1] != "gc") {
+			return cliError(stderr, "resources requires run, status, or gc")
+		}
+		return runEngine("resources.py", args[1:], stdout, stderr)
 	case "version":
 		if len(args) != 1 {
-			fmt.Fprintln(stderr, "harnessctl: version accepts no arguments")
-			return 2
+			return cliError(stderr, "version accepts no arguments")
 		}
 		fmt.Fprintf(stdout, "harnessctl %s\n", Version)
 		return 0
 	case "scaffold":
 		if len(args) < 2 {
-			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit or record")
-			return 2
+			return cliError(stderr, "scaffold requires audit or record")
 		}
 		switch args[1] {
 		case "audit":
@@ -47,33 +52,33 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		case "record":
 			return runScaffoldRecord(args[2:], stdout, stderr)
 		default:
-			fmt.Fprintln(stderr, "harnessctl: scaffold requires audit or record")
-			return 2
+			return cliError(stderr, "scaffold requires audit or record")
 		}
-	case "evidence":
-		if len(args) < 2 || args[1] != "verify" {
-			fmt.Fprintln(stderr, "harnessctl: evidence requires verify")
-			return 2
+	case "evidence", "approval", "collect":
+		contract := map[string][2]string{
+			"evidence": {"verify", "verify_evidence.py"},
+			"approval": {"finalize", "finalize_approval.py"},
+			"collect":  {"changes", "collect_changes.py"},
+		}[args[0]]
+		if len(args) < 2 || args[1] != contract[0] {
+			return cliError(stderr, "%s requires %s", args[0], contract[0])
 		}
-		return runEngine("verify_evidence.py", args[2:], stdout, stderr)
+		return runEngine(contract[1], args[2:], stdout, stderr)
 	case "check":
 		if len(args) < 2 {
-			fmt.Fprintln(stderr, "harnessctl: check requires boundaries or spec-registry")
-			return 2
+			return cliError(stderr, "check requires boundaries or spec-registry")
 		}
 		script := map[string]string{
 			"boundaries":    "check_ai_boundaries.sh",
 			"spec-registry": "check_spec_registry.sh",
 		}[args[1]]
 		if script == "" {
-			fmt.Fprintf(stderr, "harnessctl: unknown check %q\n", args[1])
-			return 2
+			return cliError(stderr, "unknown check %q", args[1])
 		}
 		return runEngine(script, args[2:], stdout, stderr)
 	case "verify":
 		if len(args) < 2 {
-			fmt.Fprintln(stderr, "harnessctl: verify requires change, candidate, or release")
-			return 2
+			return cliError(stderr, "verify requires change, candidate, or release")
 		}
 		script := map[string]string{
 			"change":    "verify_change.sh",
@@ -81,39 +86,28 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			"release":   "verify_release.sh",
 		}[args[1]]
 		if script == "" {
-			fmt.Fprintf(stderr, "harnessctl: unknown verification profile %q\n", args[1])
-			return 2
+			return cliError(stderr, "unknown verification profile %q", args[1])
 		}
 		return runEngine(script, args[2:], stdout, stderr)
-	case "approval":
-		if len(args) < 2 || args[1] != "finalize" {
-			fmt.Fprintln(stderr, "harnessctl: approval requires finalize")
-			return 2
-		}
-		return runEngine("finalize_approval.py", args[2:], stdout, stderr)
-	case "collect":
-		if len(args) < 2 || args[1] != "changes" {
-			fmt.Fprintln(stderr, "harnessctl: collect requires changes")
-			return 2
-		}
-		return runEngine("collect_changes.py", args[2:], stdout, stderr)
 	case "install-tools":
 		return runEngine("install_tools.sh", args[1:], stdout, stderr)
 	case "workspace-preflight":
 		_, forwarded, err := projectRoot(args[1:])
 		if err != nil {
-			fmt.Fprintf(stderr, "harnessctl: %v\n", err)
-			return 2
+			return cliError(stderr, "%v", err)
 		}
 		if len(forwarded) != 0 {
-			fmt.Fprintln(stderr, "harnessctl: workspace-preflight received unexpected arguments")
-			return 2
+			return cliError(stderr, "workspace-preflight received unexpected arguments")
 		}
 		return runEngine("workspace_preflight.sh", args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "harnessctl: unknown command %q\n", args[0])
-		return 2
+		return cliError(stderr, "unknown command %q", args[0])
 	}
+}
+
+func cliError(stderr io.Writer, format string, values ...any) int {
+	fmt.Fprintf(stderr, "harnessctl: "+format+"\n", values...)
+	return 2
 }
 
 func usageText() string {
@@ -129,28 +123,25 @@ commands:
   collect changes
   install-tools
   workspace-preflight
+  resources run|status|gc
 `
 }
 
 func runEngine(script string, arguments []string, stdout, stderr io.Writer) int {
 	repo, forwarded, err := projectRoot(arguments)
 	if err != nil {
-		fmt.Fprintf(stderr, "harnessctl: %v\n", err)
-		return 2
+		return cliError(stderr, "%v", err)
 	}
 	if err := verifyProjectLock(repo); err != nil {
-		fmt.Fprintf(stderr, "harnessctl: %v\n", err)
-		return 2
+		return cliError(stderr, "%v", err)
 	}
 	runtimeRoot, err := os.MkdirTemp("", "harnessctl-engine-")
 	if err != nil {
-		fmt.Fprintf(stderr, "harnessctl: create engine runtime: %v\n", err)
-		return 2
+		return cliError(stderr, "create engine runtime: %v", err)
 	}
 	defer os.RemoveAll(runtimeRoot)
 	if err := extractEngine(runtimeRoot); err != nil {
-		fmt.Fprintf(stderr, "harnessctl: extract engine runtime: %v\n", err)
-		return 2
+		return cliError(stderr, "extract engine runtime: %v", err)
 	}
 
 	command := exec.Command(filepath.Join(runtimeRoot, "scripts", script), forwarded...)
@@ -168,15 +159,34 @@ func runEngine(script string, arguments []string, stdout, stderr io.Writer) int 
 		"HARNESS_TOOL_VERSIONS="+filepath.Join(repo, "harness", "tool_versions.env"),
 		"HARNESS_EXTERNAL_ENGINE=1",
 		"HARNESSCTL_VERSION="+Version,
+		"HARNESSCTL_OWNER_PID="+fmt.Sprint(os.Getpid()),
 	)
-	if err := command.Run(); err != nil {
+	if err := runSignaledCommand(command); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return exitError.ExitCode()
 		}
-		fmt.Fprintf(stderr, "harnessctl: execute engine: %v\n", err)
-		return 2
+		return cliError(stderr, "execute engine: %v", err)
 	}
 	return 0
+}
+
+func runSignaledCommand(command *exec.Cmd) error {
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	if err := command.Start(); err != nil {
+		return err
+	}
+	completed := make(chan error, 1)
+	go func() { completed <- command.Wait() }()
+	for {
+		select {
+		case sig := <-signals:
+			_ = command.Process.Signal(sig)
+		case err := <-completed:
+			return err
+		}
+	}
 }
 
 func verifyProjectLock(repo string) error {
@@ -213,6 +223,10 @@ func projectRoot(arguments []string) (string, []string, error) {
 	repo := "."
 	forwarded := make([]string, 0, len(arguments))
 	for index := 0; index < len(arguments); index++ {
+		if arguments[index] == "--" {
+			forwarded = append(forwarded, arguments[index:]...)
+			break
+		}
 		if arguments[index] != "--repo" {
 			forwarded = append(forwarded, arguments[index])
 			continue
