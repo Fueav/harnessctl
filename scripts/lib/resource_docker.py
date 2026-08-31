@@ -258,16 +258,31 @@ class Docker:
         if self.inspect('network', network, env, 'network', missing=True):
             raise ResourceError('dependency network survived cleanup')
 
+    def disk_bytes(self, container, program, path):
+        option, column = {'du': ('-sk', 0), 'df': ('-Pk', 3)}[program]
+        # A read can fail while PostgreSQL removes files or Docker is briefly
+        # busy. Require a complete successful measurement; never accept partial
+        # output or retry mutations; each of three attempts has a ten-second limit.
+        for attempt in range(3):
+            try:
+                output = self.call(['exec', container, program, option, path], timeout=10)
+                value = int(output.splitlines()[-1].split()[column])
+                if value < 0:
+                    raise ValueError('negative disk measurement')
+                return value * 1024
+            except (ResourceError, ValueError, IndexError) as error:
+                if attempt == 2:
+                    raise ResourceError(program + ' storage sampling failed after 3 attempts') from error
+                time.sleep(0.1)
+
     def usage(self, env):
         usage = {'storage_bytes': 0, 'service_log_budget_bytes': 60 * 1024**2}
         for service in ('postgres', 'redis'):
             self.inspect('container', env['name'] + '-' + service, env, service)
             path = env['config'][service].get('data_path', '/data')
-            size = self.call(['exec', env['name'] + '-' + service, 'du', '-sk', path])
-            usage[service + '_bytes'] = int(size.split()[0]) * 1024
+            usage[service + '_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'du', path)
             usage['storage_bytes'] += usage[service + '_bytes']
-            free = self.call(['exec', env['name'] + '-' + service, 'df', '-Pk', path])
-            usage['docker_free_bytes'] = int(free.splitlines()[-1].split()[3]) * 1024
+            usage['docker_free_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'df', path)
         usage['storage_bytes'] += usage['service_log_budget_bytes']
         return usage
 

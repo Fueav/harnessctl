@@ -286,6 +286,38 @@ class DockerOwnershipTests(unittest.TestCase):
             with self.assertRaises(ResourceError):
                 Docker(Path('/unused')).call(['volume', 'inspect', 'fixture'], missing=True)
 
+    def test_storage_sampling_retries_a_failed_read_before_using_a_complete_measurement(self):
+        backend = Docker(Path('/unused'))
+        env = {'name': 'fixture', 'config': {'postgres': {}, 'redis': {}}}
+        with patch.object(backend, 'inspect'), patch('lib.resource_docker.time.sleep'), \
+             patch.object(backend, 'call', side_effect=[ResourceError('query failed'), '12\t/data',
+                                                       'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda 100 20 80 20% /data',
+                                                       '0\t/data', '/dev/sda 100 20 80 20% /data']) as call:
+            usage = backend.usage(env)
+        self.assertEqual(usage['postgres_bytes'], 12 * 1024)
+        self.assertEqual(usage['docker_free_bytes'], 80 * 1024)
+        self.assertEqual(call.call_count, 5)
+
+    def test_persistent_or_invalid_storage_measurements_fail_closed_after_bounded_retries(self):
+        for value in (ResourceError('daemon unavailable'), 'invalid', '-1\t/data'):
+            with self.subTest(value=str(value)):
+                backend = Docker(Path('/unused'))
+                env = {'name': 'fixture', 'config': {'postgres': {}, 'redis': {}}}
+                effect = {'side_effect': value} if isinstance(value, Exception) else {'return_value': value}
+                with patch.object(backend, 'inspect'), patch('lib.resource_docker.time.sleep'), \
+                     patch.object(backend, 'call', **effect) as call:
+                    with self.assertRaisesRegex(ResourceError, 'sampling failed'):
+                        backend.usage(env)
+                self.assertEqual(call.call_count, 3)
+
+    def test_storage_sampler_does_not_retry_or_ignore_an_ownership_conflict(self):
+        backend = Docker(Path('/unused'))
+        with patch.object(backend, 'inspect', side_effect=ResourceError('ownership conflict')), \
+             patch.object(backend, 'call') as call:
+            with self.assertRaisesRegex(ResourceError, 'ownership'):
+                backend.usage({'name': 'fixture', 'config': {'postgres': {}, 'redis': {}}})
+        call.assert_not_called()
+
     def test_foreign_volume_cannot_be_adopted_or_removed(self):
         backend = Docker(Path('/unused'))
         with patch.object(backend, 'call', return_value=json.dumps({'Labels': {LABEL + 'project': 'foreign'}})) as call:

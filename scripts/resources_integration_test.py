@@ -19,6 +19,11 @@ def docker_proxy():
     args = sys.argv[2:]
     root = Path(os.environ['HARNESS_FIXTURE_FAULT_ROOT'])
     phase = os.environ['HARNESS_FIXTURE_FAULT_PHASE']
+    if phase in ('sample-once', 'sample-failure') and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
+        if phase == 'sample-failure' or not (root / 'blocked').exists():
+            (root / 'blocked').write_text('sampling failed')
+            print('1\t/data')  # A failed scan's partial total must not be accepted.
+            raise SystemExit(1)
     data = sys.stdin.read() if args[:2] == ['exec', '-i'] and 'psql' in args else None
     matched = bool(data and data.startswith('CREATE DATABASE' if phase == 'allocation' else 'DROP DATABASE'))
     if matched and phase == 'cleanup-failure':
@@ -227,6 +232,11 @@ def main():
         cases.append('invoking_cli_kill9_stops_supervisor_workload_and_reclaims_data')
         healthy = start()
         live = wait_active(1)[0]
+        require(cli('run', extra=payload(), env=fault_env('sample-once')))
+        rejected = cli('run', extra=payload(), env=fault_env('sample-failure'))
+        if rejected.returncode == 0 or set(state()['runs']) != {live['id']}:
+            raise RuntimeError('failed storage sampling admitted work or removed active data')
+        cases.append('transient_sampling_retries_and_persistent_failure_blocks_admission_without_deleting_live_data')
         for phase in ('allocation', 'cleanup'):
             process = subprocess.Popen([binary, 'resources', 'run', '--repo', str(repo), '--state-root', str(state_root), *payload()],
                                        env=fault_env(phase), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
