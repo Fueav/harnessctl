@@ -273,6 +273,33 @@ class LifecycleTests(unittest.TestCase):
 
 
 class DockerOwnershipTests(unittest.TestCase):
+    def test_postgres_init_only_socket_is_not_a_ready_dependency(self):
+        backend = Docker(Path('/unused'))
+        env = {'name': 'fixture', 'secret': 'fixture-password',
+               'images': {'postgres': 'pg-image', 'redis': 'redis-image'}}
+        initializing = True
+
+        def inspect(kind, name, environment, service):
+            return {'State': {'Running': True}, 'Image': env['images'][service]}
+
+        def call(args, **kwargs):
+            if 'psql' in args:
+                # The official image's temporary initialization server accepts
+                # socket queries while the application's TCP listener is absent.
+                if '-h' in args and args[args.index('-h') + 1] == '127.0.0.1':
+                    if initializing:
+                        raise ResourceError('PostgreSQL TCP listener is not ready')
+                    self.assertEqual(kwargs['env']['PGPASSWORD'], env['secret'])
+                    self.assertNotIn(env['secret'], args)
+                return '1'
+            return 'PONG'
+
+        with patch.object(backend, 'inspect', side_effect=inspect), patch.object(backend, 'call', side_effect=call):
+            with self.assertRaisesRegex(ResourceError, 'TCP listener'):
+                backend.health(env)
+            initializing = False
+            backend.health(env)
+
     def test_exited_group_is_not_reported_as_permission_failure_on_macos(self):
         child = {'pid': 1234, 'started': 'same', 'boot': 'same'}
         live = type('Result', (), {'returncode': 0, 'stdout': '1234 1234 S\n'})()

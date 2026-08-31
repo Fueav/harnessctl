@@ -223,6 +223,44 @@ func TestSpecRegistryAcceptsLegacyVersionTwoThroughFacade(t *testing.T) {
 	}
 }
 
+func TestSpecRegistryAcceptsApprovedInitialRecordedDeliveryThroughFacade(t *testing.T) {
+	fixture := newAuditFixture(t)
+	repo := fixture.target
+	if err := os.Remove(filepath.Join(repo, "harness/scaffold.lock")); err != nil {
+		t.Fatal(err)
+	}
+	writeAuditFile(t, repo, "harness/harness.lock", `{"schema_version":1,"module":"github.com/Fueav/harnessctl","version":"dev"}`, 0o644)
+	writeAuditFile(t, repo, "harness/harness_profiles.json", "{}\n", 0o644)
+	writeAuditFile(t, repo, "docs/harness-workflows.json", `{"version":3,"workflow_classes":["HARNESS-FOCUSED-CHANGE","HARNESS-MAINTENANCE","HARNESS-SPEC-FIRST-FEATURE","HARNESS-VERIFICATION-INCIDENT"]}`, 0o644)
+	writeAuditFile(t, repo, "specs/index.json", `{"version":1,"specs":[]}`, 0o644)
+	auditGit(t, repo, "add", ".")
+	auditGit(t, repo, "commit", "-m", "legacy consumer configuration")
+	base := auditGit(t, repo, "rev-parse", "HEAD")
+	code, _, receipt, diagnostics := runRecord(t, fixture, "AGENTS.md=preserved", "harness/policy.json=preserved")
+	if code != 0 {
+		t.Fatal(diagnostics)
+	}
+	manifest, err := os.ReadFile(filepath.Join(fixture.template, "harness/scaffold_manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeAuditFile(t, repo, "harness/scaffold_manifest.json", string(manifest), 0o644)
+	writeAuditFile(t, repo, "harness/scaffold.lock", string(receipt), 0o644)
+	auditGit(t, repo, "add", "harness")
+	auditGit(t, repo, "commit", "-m", "record initial delivery")
+	t.Setenv("HARNESS_SCAFFOLD_DELIVERY", "bootstrap")
+	t.Setenv("AI_BOUNDARY_APPROVED", "1")
+	t.Setenv("AI_BOUNDARY_APPROVAL_EVIDENCE", "owner-request:delivery-fixture")
+	var stdout, stderr bytes.Buffer
+	if code := Run([]string{"check", "spec-registry", "--repo", repo, "--compare-ref", base, "--artifact-dir", ".artifacts/change"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("recorded bootstrap failed: %d\n%s\n%s", code, stdout.String(), stderr.String())
+	}
+	report, err := os.ReadFile(filepath.Join(repo, ".artifacts/change/spec_registry.json"))
+	if err != nil || !bytes.Contains(report, []byte(`"initial_scaffold_delivery"`)) {
+		t.Fatalf("initial delivery receipt missing: %v", err)
+	}
+}
+
 func TestEngineRefusesVersionMismatchBeforeExecution(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "harness"), 0o755); err != nil {

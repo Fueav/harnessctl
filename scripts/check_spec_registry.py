@@ -194,6 +194,38 @@ def is_harness_path(path: str) -> bool:
     )
 
 
+def initial_scaffold_delivery(repo: pathlib.Path, compare_ref: str | None) -> dict[str, str] | None:
+    """Account separately for an explicitly approved first scaffold delivery."""
+    evidence = os.environ.get("AI_BOUNDARY_APPROVAL_EVIDENCE", "").strip()
+    if (
+        not compare_ref
+        or os.environ.get("HARNESS_SCAFFOLD_DELIVERY") != "bootstrap"
+        or os.environ.get("AI_BOUNDARY_APPROVED") != "1"
+        or not evidence
+        or git(repo, "ls-tree", "--name-only", compare_ref, "--", "harness/scaffold.lock")
+    ):
+        return None
+    directory = repo / "harness"
+    lock_path, manifest_path = directory / "scaffold.lock", directory / "scaffold_manifest.json"
+    if any(path.is_symlink() for path in (directory, lock_path, manifest_path)):
+        return None
+    try:
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        manifest = manifest_path.read_bytes()
+        if (
+            not isinstance(lock, dict)
+            or type(lock.get("schema_version")) is not int
+            or lock["schema_version"] != 1
+            or not isinstance(lock.get("resolved_paths"), list)
+            or not re.fullmatch(r"[0-9a-f]{40}", str(lock.get("template_commit", "")))
+            or lock.get("manifest_sha256") != hashlib.sha256(manifest).hexdigest()
+        ):
+            return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return {"template_commit": lock["template_commit"], "approval_evidence": evidence}
+
+
 def size_budget_records(
     repo: pathlib.Path, errors: list[str]
 ) -> list[dict[str, int | str]]:
@@ -313,11 +345,13 @@ def main() -> int:
             }
         )
 
+    delivery = None
     try:
         changes = changed_paths(repo, args.compare_ref, snapshot)
         changed_specs = {path for path in changes if path in discovered}
         added, deleted = harness_line_delta(repo, args.compare_ref)
-        if added > deleted:
+        delivery = initial_scaffold_delivery(repo, args.compare_ref)
+        if added > deleted and delivery is None:
             errors.append(
                 f"Harness line budget exceeded: +{added}/-{deleted}; refactor before adding"
             )
@@ -337,6 +371,8 @@ def main() -> int:
         "violations": errors,
         "workflow_classes": sorted(workflow_ids),
     }
+    if delivery is not None:
+        payload["initial_scaffold_delivery"] = delivery
     (artifact_dir / "spec_registry.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

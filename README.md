@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.5.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.5.1
 ```
 
 `resources run|status|gc` provides owned test services shared across Git worktrees, per-command data and bounded cleanup. Consumers declare `harness/dependencies.json`; see [the resource lifecycle contract](docs/test-resources.md).
@@ -39,8 +39,6 @@ A consumer keeps only:
 - thin compatibility wrappers such as `scripts/verify_release.sh`;
 - repository-specific product specs and gate configuration.
 
-Engine fixes and tests live here once and ship through versioned releases.
-
 ## Profile schema v3
 
 Schema v3 keeps the v2 custom-gate and symlink contracts, allows custom gates to be selected by changed paths, and reduces verification to `change`, `pull_request`, and `release`. A nightly job invokes the `release` profile; it is a trigger, not a separate policy profile.
@@ -66,7 +64,7 @@ Schema v3 keeps the v2 custom-gate and symlink contracts, allows custom gates to
 
 Custom gate commands are normalized repository-relative paths under `scripts/` or `harness/`. Paths emitted through the line-based configuration protocol must not contain TAB, CR, or LF characters. Add the gate name to a `gate_sets` sequence and declare outputs through `gate_artifacts`. A schema v3 custom gate may also appear in `conditional_gates`; the evidence ledger then records it independently as passed or skipped. Symlink `link` and `target` values are normalized paths relative to the repository root.
 
-Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, remove the `nightly` profile, remove `nightly` from every `always_profiles` list, declare any path-selected custom gates, and update `harness/harness.lock` to v0.5.0.
+Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, remove the `nightly` profile, remove `nightly` from every `always_profiles` list, declare any path-selected custom gates, and update `harness/harness.lock` to v0.5.1.
 
 ## Evidence reuse
 
@@ -81,6 +79,8 @@ Schemas v1 and v2 remain readable for existing consumers. To migrate v2 to v3, r
 ## Workflow registry compatibility
 
 The `spec-registry` gate accepts the legacy version 2 workflow manifest and the version 3 compact class list. Version 2 preserves compatibility with existing consumers; version 3 contains only the four workflow IDs so the repository's workflow document can remain the sole semantic authority.
+
+For an owner-approved first Template Delivery into a legacy repository, set `HARNESS_SCAFFOLD_DELIVERY=bootstrap` alongside the normal explicit boundary approval and its evidence. The compare commit must lack `harness/scaffold.lock`; the current delivery record must bind its source commit and manifest digest. The registry reports the actual line delta and this initial-delivery receipt instead of applying the post-delivery net-line budget. Absolute prompt/skill/profile limits, specification checks, boundary approval validation, and native gates still apply. Subsequent upgrades and maintenance retain the normal budget even if the bootstrap flag remains set. Complete a clean scaffold audit before accepting delivery; this budget classification does not replace it.
 
 ## Member-driven built-in gates
 

@@ -148,8 +148,11 @@ class Docker:
 
     def sql(self, env, statement):
         self.inspect('container', env['name'] + '-postgres', env, 'postgres')
-        return self.call(['exec', '-i', env['name'] + '-postgres', 'psql', '-X', '-U', 'postgres', '-d', 'postgres',
-                          '-v', 'ON_ERROR_STOP=1', '-At'], data=statement)
+        # Image initialization exposes a temporary socket-only server. Require
+        # the authenticated TCP listener that the actual test clients will use.
+        return self.call(['exec', '-i', '-e', 'PGPASSWORD', env['name'] + '-postgres', 'psql', '-X',
+                          '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-At'],
+                         data=statement, env={'PGPASSWORD': env['secret']})
 
     def redis(self, env, *args, db=0):
         self.inspect('container', env['name'] + '-redis', env, 'redis')

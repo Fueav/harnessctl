@@ -219,6 +219,52 @@ mkdir -p "$REPO/scripts"
 printf 'print("new release logic")\n' >"$REPO/scripts/finalize_approval.py"
 expect_failure "net-positive release runtime change passed" "Harness line budget exceeded"
 
+write_delivery_record() {
+  python3 - "$REPO" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = {"schema_version": 1, "managed_paths": [{"path": "AGENTS.md", "strategy": "copy"}], "retired_paths": []}
+raw = (json.dumps(manifest) + "\n").encode()
+(root / "harness/scaffold_manifest.json").write_bytes(raw)
+lock = {"schema_version": 1, "template_commit": "a" * 40, "manifest_sha256": hashlib.sha256(raw).hexdigest(), "resolved_paths": []}
+(root / "harness/scaffold.lock").write_text(json.dumps(lock) + "\n")
+PY
+}
+
+setup_repo initial_delivery
+write_delivery_record
+printf 'new repository module\n' >"$REPO/harness/delivery_module.py"
+expect_failure "bootstrap was inferred without an explicit delivery request" "Harness line budget exceeded"
+(
+  export HARNESS_SCAFFOLD_DELIVERY=bootstrap AI_BOUNDARY_APPROVED=0
+  export AI_BOUNDARY_APPROVAL_EVIDENCE=owner-request:bootstrap-fixture
+  expect_failure "unapproved bootstrap bypassed the line budget" "Harness line budget exceeded"
+  export AI_BOUNDARY_APPROVED=1 AI_BOUNDARY_APPROVAL_EVIDENCE=
+  expect_failure "bootstrap without approval evidence passed" "Harness line budget exceeded"
+  export AI_BOUNDARY_APPROVAL_EVIDENCE=owner-request:bootstrap-fixture
+  run_check || fail "approved first template delivery was rejected"
+  python3 - "$REPO/.artifacts/spec_registry.json" <<'PY'
+import json, pathlib, sys
+report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert report["harness_line_budget"]["added"] > report["harness_line_budget"]["deleted"]
+assert report["initial_scaffold_delivery"]["template_commit"] == "a" * 40
+assert report["initial_scaffold_delivery"]["approval_evidence"] == "owner-request:bootstrap-fixture"
+PY
+  printf 'tampered\n' >>"$REPO/harness/scaffold_manifest.json"
+  expect_failure "stale delivery record bypassed the line budget" "Harness line budget exceeded"
+  write_delivery_record
+  python3 - "$REPO/AGENTS.md" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("rule\n" * 121)
+PY
+  expect_failure "bootstrap bypassed absolute prompt limits" "AGENTS.md exceeds 120 lines"
+  git -C "$REPO" checkout -- AGENTS.md
+  git -C "$REPO" add harness
+  git -C "$REPO" commit -qm "first delivery"
+  printf 'later maintenance\n' >>"$REPO/harness/delivery_module.py"
+  expect_failure "bootstrap flag bypassed subsequent maintenance budgets" "Harness line budget exceeded"
+)
+
 setup_repo agents_absolute_budget
 python3 - "$REPO/AGENTS.md" <<'PY'
 import pathlib
