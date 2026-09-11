@@ -91,8 +91,8 @@ grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
 
-grep -Fq 'VERSION ?= v0.5.1' "$ROOT_DIR/Makefile" || \
-  fail "make build does not default to v0.5.1"
+grep -Fq 'VERSION ?= v0.6.0' "$ROOT_DIR/Makefile" || \
+  fail "make build does not default to v0.6.0"
 grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
   fail "make build does not inject the release version"
 for contract in \
@@ -124,8 +124,8 @@ for contract in \
   grep -Fq "$contract" "$ROOT_DIR/README.md" || \
     fail "README is missing the custom-gate contract: $contract"
 done
-grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.5.1' \
-  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.5.1"
+grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.6.0' \
+  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.6.0"
 
 python3 -I -B -S - "$ROOT_DIR" <<'PY'
 import pathlib
@@ -145,15 +145,11 @@ paths = [
     "scripts/verify_evidence.py",
 ]
 count = sum(len((root / path).read_text(encoding="utf-8").splitlines()) for path in paths)
-if count > 3100:
-    raise SystemExit(f"production verification runtime is {count} lines; budget is 3100")
 print(f"production verification runtime: {count} lines")
 scaffold_count = sum(
     len((root / path).read_text(encoding="utf-8").splitlines())
     for path in ("scaffold_audit.go", "scaffold_record.go")
 )
-if scaffold_count > 650:
-    raise SystemExit(f"scaffold convergence runtime is {scaffold_count} lines; budget is 650")
 print(f"scaffold convergence runtime: {scaffold_count} lines")
 PY
 

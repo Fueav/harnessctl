@@ -20,15 +20,8 @@ REQUIRED_WORKFLOWS = {
     "HARNESS-SPEC-FIRST-FEATURE",
     "HARNESS-VERIFICATION-INCIDENT",
 }
-WORKFLOW_FIELDS = {
-    "id",
-    "use_when",
-    "artifact_policy",
-    "verification",
-    "stop_rule",
-    "evidence",
-}
-SPEC_FIELDS = {"spec_id", "module", "status", "workflow_class"}
+WORKFLOW_FIELDS = {"id", "use_when", "artifact_policy", "verification", "stop_rule", "evidence"}
+SPEC_FIELDS = {"spec_id", "module", "status"}
 SPEC_ID_RE = re.compile(r"^SPEC-[A-Z0-9][A-Z0-9_-]*$")
 MODULE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 STATUSES = {"draft", "approved", "implemented", "retired"}
@@ -64,55 +57,33 @@ def load_json(path: pathlib.Path, label: str, errors: list[str]) -> Any:
 
 
 def parse_workflow_manifest(manifest: Any, errors: list[str]) -> set[str]:
+    """Accept legacy workflow registries; version-2 spec indexes no longer use one."""
     if not isinstance(manifest, dict):
         errors.append("workflow manifest must be a JSON object")
         return set()
-
-    version = manifest.get("version")
-    classes = manifest.get("workflow_classes")
+    version, classes = manifest.get("version"), manifest.get("workflow_classes")
     if not isinstance(classes, list):
         errors.append("workflow manifest must define a workflow_classes array")
         return set()
-
-    workflow_ids: set[str] = set()
-    if version == 2:
-        for index, item in enumerate(classes):
-            if not isinstance(item, dict) or set(item) != WORKFLOW_FIELDS:
-                errors.append(
-                    f"workflow_classes[{index}] must use the legacy version 2 field set"
-                )
-                continue
-            workflow_id = item.get("id")
-            if not isinstance(workflow_id, str) or workflow_id in workflow_ids:
-                errors.append(
-                    f"workflow_classes[{index}] has an invalid or duplicate id"
-                )
-            else:
-                workflow_ids.add(workflow_id)
-            for field in WORKFLOW_FIELDS - {"id", "evidence"}:
-                if not isinstance(item.get(field), str) or not item[field].strip():
-                    errors.append(
-                        f"workflow_classes[{index}].{field} must be non-empty"
-                    )
-            if not isinstance(item.get("evidence"), list) or not item["evidence"]:
-                errors.append(
-                    f"workflow_classes[{index}].evidence must be non-empty"
-                )
-    elif version == 3:
-        for index, workflow_id in enumerate(classes):
-            if not isinstance(workflow_id, str) or not workflow_id.strip():
-                errors.append(
-                    f"workflow_classes[{index}] must be a non-empty workflow id"
-                )
-            elif workflow_id in workflow_ids:
-                errors.append(
-                    f"workflow_classes[{index}] has a duplicate workflow id"
-                )
-            else:
-                workflow_ids.add(workflow_id)
-    else:
+    if version not in (2, 3):
         errors.append("workflow manifest version must be 2 or 3")
-
+    workflow_ids = set()
+    for index, item in enumerate(classes):
+        if version == 2:
+            if not isinstance(item, dict) or set(item) != WORKFLOW_FIELDS:
+                errors.append(f"workflow_classes[{index}] must use the legacy version 2 field set")
+                continue
+            for field in WORKFLOW_FIELDS - {"id"}:
+                value = item.get(field)
+                if not value or (field == "evidence" and not isinstance(value, list)) or (field != "evidence" and (not isinstance(value, str) or not value.strip())):
+                    errors.append(f"workflow_classes[{index}].{field} must be non-empty")
+            item = item.get("id")
+        if not isinstance(item, str) or not item.strip():
+            errors.append(f"workflow_classes[{index}] must be a non-empty workflow id")
+        elif item in workflow_ids:
+            errors.append(f"workflow_classes[{index}] has a duplicate workflow id")
+        else:
+            workflow_ids.add(item)
     if workflow_ids != REQUIRED_WORKFLOWS:
         errors.append("workflow manifest must define exactly the four core workflows")
     return workflow_ids
@@ -278,7 +249,7 @@ def main() -> int:
         artifact_dir = repo / artifact_dir
     artifact_dir.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
-    size_budgets = size_budget_records(repo, errors)
+    size_budgets = []
 
     snapshot: dict[str, Any] = {}
     if (args.snapshot_file is None) != (args.snapshot_sha256 is None):
@@ -295,15 +266,17 @@ def main() -> int:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             errors.append(f"change snapshot is invalid: {exc}")
 
-    manifest = load_json(
-        repo / "docs/harness-workflows.json", "workflow manifest", errors
-    )
-    workflow_ids = parse_workflow_manifest(manifest, errors)
-
     registry = load_json(repo / "specs/index.json", "spec registry", errors)
+    version = registry.get("version") if isinstance(registry, dict) else None
+    if version == 1:
+        size_budgets = size_budget_records(repo, errors)
+    workflow_ids = set()
+    if version == 1:
+        manifest = load_json(repo / "docs/harness-workflows.json", "workflow manifest", errors)
+        workflow_ids = parse_workflow_manifest(manifest, errors)
     registered = registry.get("specs") if isinstance(registry, dict) else None
-    if registry.get("version") != 1 or not isinstance(registered, list):
-        errors.append("spec registry must use version 1 and a specs array")
+    if version not in (1, 2) or not isinstance(registered, list) or not all(isinstance(p, str) for p in registered):
+        errors.append("spec registry must use version 1 or 2 and a specs array")
         registered = []
     registered_set = set(registered)
     specs_root = repo / "specs"
@@ -331,7 +304,7 @@ def main() -> int:
         if not SPEC_ID_RE.fullmatch(spec_id) or spec_id in seen_ids:
             errors.append(f"{relative} has an invalid or duplicate spec_id")
         seen_ids.add(spec_id)
-        if workflow not in workflow_ids:
+        if version == 1 and workflow not in workflow_ids:
             errors.append(f"{relative} has unknown workflow_class {workflow!r}")
         if status not in STATUSES:
             errors.append(f"{relative} has invalid status {status!r}")

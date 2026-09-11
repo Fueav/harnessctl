@@ -26,6 +26,7 @@ unset \
 "$ROOT_DIR/scripts/install_tools_test.sh"
 "$ROOT_DIR/scripts/changed_go_packages_test.sh"
 "$ROOT_DIR/scripts/harness_config_test.sh"
+python3 "$ROOT_DIR/scripts/simplification_test.py"
 "$ROOT_DIR/scripts/verify_runner_test.sh"
 "$ROOT_DIR/scripts/harness_structure_test.sh"
 "$ROOT_DIR/scripts/finalize_approval_test.sh"

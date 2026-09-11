@@ -85,6 +85,15 @@ runner_init() {
       ENABLED_GATES[${#ENABLED_GATES[@]}]="$gate"
     fi
   done <<<"$configured_gates"
+  CONDITIONAL_GATE_NAMES="$(python3 -I -B -S "$CONFIG_TOOL" conditional-gates --profile "$RUNNER_PROFILE")" || return 2
+}
+
+gate_will_run() {
+  gate_enabled "$1" || return 3
+  case $'\n'"$CONDITIONAL_GATE_NAMES"$'\n' in
+    *$'\n'"$1"$'\n'*) runner_gate_reason "$1" ;;
+    *) return 0 ;;
+  esac
 }
 
 gate_enabled() {
@@ -167,9 +176,16 @@ seal_artifact() {
 recorded_run() {
   local name="$1" log_relative log started finished duration status=failed command_status=0 digest
   shift
+  local reason selection_status
+  if reason="$(gate_will_run "$name")"; then :; else
+    selection_status=$?
+    [[ "$selection_status" == 3 ]] || die "cannot select gate $name"
+    recorded_skip "$name" "$reason"; return 0
+  fi
   log_relative="logs/$name.log"; log="$ARTIFACT_DIR/$log_relative"; started="$(date +%s)"
   printf '==> %s\n' "$name"
-  if "$@" >"$log" 2>&1; then status=passed; else command_status=$?; FAILURE_REASON="gate $name failed"; fi
+  printf '%s\n' "$reason" >"$log"
+  if "$@" >>"$log" 2>&1; then status=passed; else command_status=$?; FAILURE_REASON="gate $name failed"; fi
   finished="$(date +%s)"; duration=$((finished - started)); digest="$(file_sha256 "$log")"
   printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$status" "$duration" "$log_relative" "$digest" >>"$GATES_FILE"
   if [[ "$status" == passed ]]; then printf 'PASS %s\n' "$name"; return 0; fi
@@ -248,9 +264,14 @@ start_parallel_gate() {
   log="$ARTIFACT_DIR/$relative"; result="$GATE_RESULTS_DIR/$(printf '%03d' "$ordinal")-$name.tsv"
   printf '==> %s (parallel)\n' "$name"
   (
-    local started finished status=passed command_status=0 digest
+    local started finished status=passed command_status=0 digest reason selection_status
     started="$(date +%s)"
-    if "$@" >"$log" 2>&1; then status=passed; else command_status=$?; status=failed; fi
+    if reason="$(gate_will_run "$name" 2>&1)"; then
+      if "$@" >"$log" 2>&1; then status=passed; else command_status=$?; status=failed; fi
+    else
+      selection_status=$?; printf '%s\n' "$reason" >"$log"
+      if [[ "$selection_status" == 3 ]]; then status=skipped; else status=failed; command_status=$selection_status; fi
+    fi
     finished="$(date +%s)"; digest="$(file_sha256 "$log")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$status" "$((finished - started))" "$relative" "$digest" >"$result"
     exit "$command_status"
@@ -264,7 +285,8 @@ finish_parallel_batch() {
   for index in "${!PARALLEL_GATE_RESULTS[@]}"; do
     IFS=$'\t' read -r name gate_status duration relative digest <"${PARALLEL_GATE_RESULTS[$index]}"
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$gate_status" "$duration" "$relative" "$digest" >>"$GATES_FILE"
-    if [[ "$gate_status" == passed ]]; then printf 'PASS %s\n' "$name"; else
+    if [[ "$gate_status" == passed ]]; then printf 'PASS %s\n' "$name";
+    elif [[ "$gate_status" == skipped ]]; then printf 'SKIP %s\n' "$name"; else
       FAILURE_REASON="gate $name failed"; printf 'FAIL %s (see %s)\n' "$name" "$ARTIFACT_DIR/$relative" >&2
       tail -n 80 "$ARTIFACT_DIR/$relative" >&2 || true
     fi

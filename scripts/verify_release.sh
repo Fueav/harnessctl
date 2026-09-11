@@ -138,16 +138,6 @@ run_benchmarks() {
   runner_cleanup_hook
 }
 
-run_selected_benchmarks() {
-  printf 'selection: %s\n' "$1"
-  run_benchmarks
-}
-
-run_race_tests() {
-  printf 'selection: %s\n' "$1"
-  run_with_test_resources go test -race ./...
-}
-
 check_initial_context() {
   [[ "$(git -C "$ROOT_DIR" rev-parse --verify 'HEAD^{commit}')" == "$HEAD_SHA" ]] || {
     printf 'HEAD changed while collecting the initial release context\n' >&2; return 1;
@@ -186,18 +176,6 @@ check_final_context() {
   is_clean || { printf 'working tree became dirty during release verification\n' >&2; return 1; }
 }
 
-run_conditional_gate() {
-  local gate="$1" command="$2" reason status
-  gate_enabled "$gate" || return 0
-  if reason="$(runner_gate_reason "$gate")"; then
-    recorded_run "$gate" "$command" "$reason"
-  else
-    status=$?
-    [[ "$status" == 3 ]] || die "cannot select conditional gate $gate"
-    recorded_skip "$gate" "$reason"
-  fi
-}
-
 cd "$ROOT_DIR"
 case "$VERIFY_PERFORMANCE_REQUESTED" in 0|1) ;; *) die "VERIFY_PERFORMANCE_REQUESTED must be 0 or 1" ;; esac
 runner_validate_profile
@@ -205,6 +183,9 @@ runner_resolve_context
 
 recorded_run change_scope collect_scope
 seal_artifact change_scope.json
+if gate_enabled coverage_threshold && ! gate_will_run coverage_threshold >/dev/null; then
+  RUNNER_COVERAGE_THRESHOLD=""
+fi
 recorded_run release_context_before check_initial_context
 gate_enabled toolchain && \
   recorded_run toolchain ensure_tools golangci-lint govulncheck gitleaks benchstat
@@ -224,20 +205,20 @@ gate_enabled gitleaks && start_parallel_gate gitleaks check_gitleaks
 start_parallel_gate ai_boundaries check_boundaries
 finish_parallel_batch
 seal_artifact ai_boundaries.json
-gate_enabled test_unit_coverage && seal_artifact coverage.out
+[[ ! -f "$ARTIFACT_DIR/coverage.out" ]] || seal_artifact coverage.out
 
 if gate_enabled coverage_threshold; then
   recorded_run coverage_threshold check_coverage
-  seal_artifact coverage_percent.txt
+  [[ ! -f "$ARTIFACT_DIR/coverage_percent.txt" ]] || seal_artifact coverage_percent.txt
 fi
-run_conditional_gate test_race run_race_tests
+gate_enabled test_race && recorded_run test_race run_with_test_resources go test -race ./...
 gate_enabled migration_safety && start_parallel_gate migration_safety check_migrations
 gate_enabled prompt_evals && start_parallel_gate prompt_evals check_prompt_evals
 gate_enabled spec_registry && start_parallel_gate spec_registry check_spec_registry
 finish_parallel_batch
 gate_enabled spec_registry && seal_artifact spec_registry.json
 
-run_conditional_gate benchmarks run_selected_benchmarks
+gate_enabled benchmarks && recorded_run benchmarks run_benchmarks
 if gate_enabled benchmarks && [[ -f "$ARTIFACT_DIR/bench/current.txt" ]]; then
   seal_artifact bench/current.txt
   seal_artifact bench/base.txt

@@ -237,7 +237,7 @@ def _validate_machine_evidence(
         raise FinalizationError("candidate change snapshot digest disagrees with the summary")
 
     coverage = summary.get("coverage")
-    if "coverage_threshold" in required_gates:
+    if statuses.get("coverage_threshold") == "passed":
         try:
             coverage_percentage = float(contents["coverage_percent.txt"].decode("ascii").strip())
         except (KeyError, UnicodeDecodeError, ValueError) as error:
@@ -253,7 +253,7 @@ def _validate_machine_evidence(
             raise FinalizationError("candidate coverage does not satisfy the trusted threshold")
     elif coverage != {"percentage": None, "threshold": None} or "coverage_percent.txt" in contents:
         raise FinalizationError("candidate without coverage_threshold has unexpected coverage evidence")
-    if "test_unit_coverage" not in required_gates and "coverage.out" in contents:
+    if statuses.get("test_unit_coverage") != "passed" and "coverage.out" in contents:
         raise FinalizationError("candidate without test_unit_coverage has unexpected coverage output")
 
     scope = load_json_bytes(contents["change_scope.json"], "candidate change snapshot")

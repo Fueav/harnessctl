@@ -103,8 +103,10 @@ def _validate_conditional_gates(policy: Dict[str, Any], schema_version: int) -> 
     custom = set(policy["custom_gates"])
     if schema_version < 3 and set(conditions) != {"test_race", "benchmarks"}:
         raise ConfigError("Harness profile policy has invalid conditional gates")
-    if schema_version == 3:
-        unknown = set(conditions) - ({"test_race", "benchmarks"} | custom)
+    if schema_version >= 3:
+        eligible = ({"test_race", "benchmarks"} if schema_version == 3 else
+                    BUILTIN_GATES - {"change_scope", "ai_boundaries", "gitleaks", "spec_registry", "release_context_before", "release_context_after"})
+        unknown = set(conditions) - (eligible | custom)
         if unknown or not {"test_race", "benchmarks"}.issubset(conditions):
             raise ConfigError("Harness profile policy has invalid conditional gates")
     profiles = set(policy["profiles"])
@@ -113,7 +115,7 @@ def _validate_conditional_gates(policy: Dict[str, Any], schema_version: int) -> 
         benchmark = {"benchmark_file_suffix", "benchmark_declaration", "explicit_request"}
         if gate == "benchmarks":
             required |= benchmark
-        allowed = required | (benchmark if gate == "benchmarks" else set())
+        allowed = required | (benchmark if gate == "benchmarks" else set()) | ({"path_suffixes"} if schema_version >= 4 else set())
         if not isinstance(rule, dict) or not required.issubset(rule) or set(rule) - allowed:
             raise ConfigError(f"Harness conditional gate {gate!r} has an invalid rule")
         always = _unique_strings(
@@ -130,6 +132,9 @@ def _validate_conditional_gates(policy: Dict[str, Any], schema_version: int) -> 
         prefixes = _unique_strings(
             rule["path_prefixes"], f"Harness conditional gate {gate!r} path prefixes"
         )
+        suffixes = _unique_strings(rule.get("path_suffixes", []), f"Harness conditional gate {gate!r} suffixes")
+        if any(not suffix.startswith(".") or any(c in suffix for c in "/\\\t\r\n") for suffix in suffixes):
+            raise ConfigError(f"Harness conditional gate {gate!r} has invalid suffixes")
         for prefix in prefixes:
             if not prefix or any(character in prefix for character in "\t\r\n\\"):
                 raise ConfigError(f"Harness conditional gate {gate!r} has an invalid path prefix")
@@ -196,7 +201,7 @@ def load_policy() -> Dict[str, Any]:
         raise ConfigError("Harness profile policy has an invalid schema")
     schema_version = policy["schema_version"]
     required = V1_KEYS if schema_version == 1 else V1_KEYS | {"custom_gates", "symlinks"}
-    if schema_version not in (1, 2, 3) or set(policy) != required:
+    if schema_version not in (1, 2, 3, 4) or set(policy) != required:
         raise ConfigError("Harness profile policy has an invalid schema")
     mapping_keys = (
         "conditional_gates", "evidence", "evidence_sets", "gate_artifacts",
@@ -204,7 +209,7 @@ def load_policy() -> Dict[str, Any]:
     )
     if any(not isinstance(policy.get(key), dict) for key in mapping_keys):
         raise ConfigError("Harness profile policy has invalid gates")
-    if schema_version in (2, 3):
+    if schema_version >= 2:
         _validate_extensions(policy)
     else:
         policy["custom_gates"] = {}
@@ -238,7 +243,7 @@ def load_policy() -> Dict[str, Any]:
         )
         if not set(skips).issubset(gates):
             raise ConfigError(f"Harness profile {name!r} skips unknown gates")
-        if schema_version in (2, 3) and set(skips) & set(policy["custom_gates"]):
+        if schema_version >= 2 and set(skips) & set(policy["custom_gates"]):
             raise ConfigError(f"Harness profile {name!r} skips a custom gate")
     evidence_references = policy["evidence"].values()
     if (
@@ -358,10 +363,10 @@ def gate_decision(
     paths = [item.get("path") for item in changes if isinstance(item, Mapping)]
     matching = sorted(
         path for path in paths
-        if isinstance(path, str) and any(
+        if isinstance(path, str) and (any(
             path.startswith(prefix) if prefix.endswith("/") else path == prefix
             for prefix in rule["path_prefixes"]
-        )
+        ) or any(path.endswith(suffix) for suffix in rule.get("path_suffixes", [])))
     )
     if matching:
         if gate == "test_race":

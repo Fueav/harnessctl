@@ -335,7 +335,7 @@ def main() -> int:
 
     if overall == "passed" and args.mode in ("candidate", "release"):
         coverage_error = None
-        if "coverage_threshold" in required_gates:
+        if statuses.get("coverage_threshold") == "passed":
             if coverage_threshold is None or coverage_percentage is None:
                 coverage_error = "passed release evidence requires coverage proof"
             elif coverage_percentage < coverage_threshold:
