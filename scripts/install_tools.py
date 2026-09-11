@@ -47,7 +47,7 @@ def main():
     if args.dry_run:
         print(json.dumps({'tools':tools, 'gates':gates})); return
     versions = Path(os.environ['HARNESS_TOOL_VERSIONS'])
-    gobin = Path(os.environ.get('GOBIN', args.repo/'.tools/bin'))
+    gobin = Path(os.environ.get('GOBIN') or args.repo/'.tools/bin')
     if gobin.is_symlink(): raise ValueError('GOBIN must not be a symlink')
     gobin.mkdir(parents=True, exist_ok=True)
     lock = gobin/'.harness-tools-lock.json'
@@ -56,7 +56,7 @@ def main():
     cached = {}
     try:
         data = json.loads(lock.read_text())
-        if data.get('schema_version') == 1 and data.get('manifest_sha256') == manifest: cached = data.get('tools', {})
+        if isinstance(data, dict) and data.get('schema_version') == 1 and data.get('manifest_sha256') == manifest: cached = data.get('tools', {})
         if not isinstance(cached, dict): cached = {}
     except (OSError, ValueError): pass
     env = dict(os.environ, GOBIN=str(gobin.resolve()))

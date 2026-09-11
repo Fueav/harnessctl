@@ -40,6 +40,15 @@ with tempfile.TemporaryDirectory() as directory:
     (repo/'new.go').write_text('package example\n')
     subprocess.run(command[:-1], env=env, capture_output=True, check=True)
     assert (root/'installed').read_text().splitlines() == ['gitleaks','golangci-lint','govulncheck']
+    for invalid_cache in ['null', '[]']:
+        (root/'bin/.harness-tools-lock.json').write_text(invalid_cache)
+        subprocess.run(command[:-1], env=env, capture_output=True, check=True)
+        assert isinstance(json.loads((root/'bin/.harness-tools-lock.json').read_text()), dict)
+    env['GOBIN'] = ''
+    subprocess.run(command[:-1], env=env, cwd=repo, capture_output=True, check=True)
+    assert (repo/'.tools/bin/gitleaks').is_file()
+    assert not (repo/'gitleaks').exists()
+    env['GOBIN'] = str(root/'bin')
     command[2] = 'release'
     assert set(plan()['tools']) == {'gitleaks','golangci-lint','govulncheck','benchstat'}
     command[2] = 'pull_request'
