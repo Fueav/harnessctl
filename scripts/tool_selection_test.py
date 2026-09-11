@@ -42,6 +42,16 @@ with tempfile.TemporaryDirectory() as directory:
     assert (root/'installed').read_text().splitlines() == ['gitleaks','golangci-lint','govulncheck']
     command[2] = 'release'
     assert set(plan()['tools']) == {'gitleaks','golangci-lint','govulncheck','benchstat'}
+    command[2] = 'pull_request'
+    env['VERIFY_PERFORMANCE_REQUESTED'] = '1'
+    assert 'benchstat' in plan()['tools']
+    env.pop('VERIFY_PERFORMANCE_REQUESTED')
+    policy_path.write_text((engine/'harness_profiles.json').read_text())
+    command[2] = 'change'
+    (repo/'new.go').unlink()
+    assert plan()['tools'] == [], plan()
+    (repo/'new.go').write_text('package example\n')
+    assert plan()['tools'] == ['golangci-lint'], plan()
     command[4] = 'missing-ref'
     assert subprocess.run(command, env=env, capture_output=True).returncode != 0
 print('tool selection passed')

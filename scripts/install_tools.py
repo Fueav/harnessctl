@@ -21,10 +21,17 @@ def selection(args):
     if not args.compare_ref: raise ValueError('--compare-ref is required with --profile')
     state = snapshot(args.repo, args.compare_ref)
     changes = [{'path': item.path} for item in state['changes']]
-    gates = [gate for gate in config.profile_gates(args.profile) if config.gate_decision(args.profile, gate, changes, args.repo, state['base_sha'], state['head_sha'])[0]]
+    performance = os.environ.get('VERIFY_PERFORMANCE_REQUESTED') or '0'
+    if performance not in {'0','1'}: raise ValueError('VERIFY_PERFORMANCE_REQUESTED must be 0 or 1')
+    gates = [gate for gate in config.profile_gates(args.profile) if config.gate_decision(args.profile, gate, changes, args.repo, state['base_sha'], state['head_sha'], performance == '1')[0]]
+    if args.profile == 'change':
+        from changed_go_packages import _select
+        if not _select(args.repo, {'changes':changes}):
+            go_gates = {'toolchain','gofmt','vet','golangci','changed_package_tests'}
+            gates = [gate for gate in gates if gate not in go_gates or gate in config.POLICY['conditional_gates']]
     needed = set()
     for gate in gates:
-        needed.update(GATE_TOOLS.get(gate, []))
+        needed.update(['golangci-lint'] if gate == 'toolchain' and args.profile == 'change' else GATE_TOOLS.get(gate, []))
         # Project-owned commands may call any pinned tool, including nested verifiers.
         if gate in config.POLICY['custom_gates']: needed.update(TOOLS)
     return [name for name in TOOLS if name in needed], gates
