@@ -97,4 +97,26 @@ with tempfile.TemporaryDirectory() as temporary:
         "--output", str(root / ".artifacts/approval/result.json")], env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
 
+with tempfile.TemporaryDirectory() as temporary:
+    root = Path(temporary); (root / "harness").mkdir()
+    policy = json.loads((engine / "harness_profiles.json").read_text())
+    policy["schema_version"] = 4
+    policy["gate_sets"]["change"] = ["change_scope", "golangci", "ai_boundaries"]
+    policy["profiles"]["change"]["skippable_gates"] = []
+    policy["evidence_sets"]["change"]["artifacts"].remove("spec_registry.json")
+    policy["machine_status_artifacts"].remove("spec_registry.json")
+    policy["conditional_gates"]["golangci"] = {"always_profiles": [], "path_prefixes": [".golangci.yml"], "skip_reason": "no lint inputs"}
+    (root / "harness/harness_profiles.json").write_text(json.dumps(policy))
+    (root / ".ai-boundaries.yml").write_text("allowed:\n  - .golangci.yml\napproval_required:\n  - harness/\nforbidden:\n  - secrets/\n")
+    (root / ".golangci.yml").write_text("before\n")
+    (root / ".gitignore").write_text(".artifacts/\n.tools/\n")
+    for args in (("init", "-q"), ("config", "user.name", "Fixture"), ("config", "user.email", "fixture@example.test"), ("add", "."), ("commit", "-qm", "baseline")):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+    (root / ".golangci.yml").write_text("after\n")
+    tools = root / ".tools/bin"; tools.mkdir(parents=True)
+    lint = tools / "golangci-lint"; lint.write_text("#!/bin/sh\necho invoked > .artifacts/lint-invoked\nexit 19\n"); lint.chmod(0o755)
+    env = dict(os.environ, HARNESS_PROJECT_ROOT=str(root), HARNESS_ENGINE_DIR=str(engine), HARNESS_PROFILE_CONFIG=str(root / "harness/harness_profiles.json"), VERIFY_COMPARE_REF="HEAD")
+    result = subprocess.run([str(engine / "verify_change.sh")], env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and (root / ".artifacts/lint-invoked").exists(), result.stdout + result.stderr
+
 print("simplification tests passed")

@@ -116,3 +116,5 @@ The runner provides these variables:
 Profile schema 4 allows input-selected built-in checks using `path_prefixes` and optional `path_suffixes`. Change scope, boundary, secret and candidate identity checks cannot become conditional. Candidate and release gate sets can differ; required artifacts belong to the gate that produces them. Unchanged inputs may skip unrelated checks; release policies can keep checks unconditional. Schemas 1–3 retain their behavior.
 
 Spec index version 2 requires only `spec_id`, `module` and `status`; it does not require a workflow registry. Version 1 keeps legacy validation. Migrate the engine pin before removing the registry from consumers. Evidence still binds the exact commit, compare base, policy and runtime inputs.
+
+Spec registry version 2 reports Harness line deltas as measurements. Repository prompt guidance still owns proportional instruction size; runtime additions and generated delivery records do not fail a text-size gate. Version 1 retains its existing enforcement.

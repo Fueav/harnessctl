@@ -29,6 +29,7 @@ run_changed_package_tests() {
   local -a packages=()
   local package
   while IFS= read -r -d '' package; do packages+=("$package"); done <"$PACKAGES_FILE"
+  (( ${#packages[@]} )) || packages=(./...)
   printf 'selected Go packages:\n'; printf '  %s\n' "${packages[@]}"
   run_with_test_resources go test "${packages[@]}"
 }
@@ -50,17 +51,21 @@ if ! select_changed_packages; then
   done
   gate_enabled changed_package_tests && \
     recorded_run changed_package_tests report_package_selection_failure
-elif [[ ! -s "$PACKAGES_FILE" ]]; then
-  for gate in toolchain gofmt vet golangci changed_package_tests; do
-    gate_enabled "$gate" && recorded_skip "$gate" "no changed Go files"
-  done
 else
-  gate_enabled toolchain && recorded_run toolchain ensure_tools go gofmt golangci-lint
-  gate_enabled gofmt && recorded_run gofmt check_gofmt
-  gate_enabled vet && recorded_run vet go vet ./...
-  gate_enabled golangci && recorded_run golangci golangci-lint run ./...
-  gate_enabled changed_package_tests && \
-    recorded_run changed_package_tests run_changed_package_tests
+  run_go_gate() {
+    local name="$1"; shift
+    gate_enabled "$name" || return 0
+    if [[ -s "$PACKAGES_FILE" ]] || [[ $'\n'"$CONDITIONAL_GATE_NAMES"$'\n' == *$'\n'"$name"$'\n'* ]]; then
+      recorded_run "$name" "$@"
+    else
+      recorded_skip "$name" "no changed Go files"
+    fi
+  }
+  run_go_gate toolchain ensure_tools go gofmt golangci-lint
+  run_go_gate gofmt check_gofmt
+  run_go_gate vet go vet ./...
+  run_go_gate golangci golangci-lint run ./...
+  run_go_gate changed_package_tests run_changed_package_tests
 fi
 recorded_run ai_boundaries check_boundaries
 seal_artifact ai_boundaries.json

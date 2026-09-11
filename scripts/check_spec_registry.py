@@ -324,7 +324,7 @@ def main() -> int:
         changed_specs = {path for path in changes if path in discovered}
         added, deleted = harness_line_delta(repo, args.compare_ref)
         delivery = initial_scaffold_delivery(repo, args.compare_ref)
-        if added > deleted and delivery is None:
+        if version == 1 and added > deleted and delivery is None:
             errors.append(
                 f"Harness line budget exceeded: +{added}/-{deleted}; refactor before adding"
             )
