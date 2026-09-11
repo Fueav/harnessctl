@@ -91,8 +91,8 @@ grep -Fq 'actions/setup-go@v5' \
   "$ROOT_DIR/.github/workflows/ci.yml" || \
   fail "CI workflow does not initialize Go"
 
-grep -Fq 'VERSION ?= v0.6.0' "$ROOT_DIR/Makefile" || \
-  fail "make build does not default to v0.6.0"
+release_version="$(sed -n 's/^VERSION ?= //p' "$ROOT_DIR/Makefile")"
+[[ "$release_version" == v* ]] || fail "make build needs a release version"
 grep -Fq -- '-X main.version=$(VERSION)' "$ROOT_DIR/Makefile" || \
   fail "make build does not inject the release version"
 for contract in \
@@ -124,8 +124,8 @@ for contract in \
   grep -Fq "$contract" "$ROOT_DIR/README.md" || \
     fail "README is missing the custom-gate contract: $contract"
 done
-grep -Fq 'github.com/Fueav/harnessctl/cmd/harnessctl@v0.6.0' \
-  "$ROOT_DIR/README.md" || fail "README install command is not pinned to v0.6.0"
+grep -Fq "github.com/Fueav/harnessctl/cmd/harnessctl@$release_version" \
+  "$ROOT_DIR/README.md" || fail "README install command differs from the build version"
 
 python3 -I -B -S - "$ROOT_DIR" <<'PY'
 import pathlib

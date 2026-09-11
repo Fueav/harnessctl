@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.6.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.7.0
 ```
 
 `resources run|status|gc` provides owned test services shared across Git worktrees, per-command data and bounded cleanup. Consumers declare `harness/dependencies.json`; see [the resource lifecycle contract](docs/test-resources.md).
@@ -118,3 +118,5 @@ Profile schema 4 allows input-selected built-in checks using `path_prefixes` and
 Spec index version 2 requires only `spec_id`, `module` and `status`; it does not require a workflow registry. Version 1 keeps legacy validation. Migrate the engine pin before removing the registry from consumers. Evidence still binds the exact commit, compare base, policy and runtime inputs.
 
 Spec registry version 2 reports Harness line deltas as measurements. Repository prompt guidance still owns proportional instruction size; runtime additions and generated delivery records do not fail a text-size gate. Version 1 retains its existing enforcement.
+
+CI may install only selected gate tools with `harnessctl install-tools --profile pull_request --compare-ref <commit>`; `--dry-run` reports the selection. Omit the profile to install all pinned tools. Unknown project gates retain the full tool set.

@@ -31,3 +31,5 @@ python3 "$ROOT_DIR/scripts/simplification_test.py"
 "$ROOT_DIR/scripts/harness_structure_test.sh"
 "$ROOT_DIR/scripts/finalize_approval_test.sh"
 "$ROOT_DIR/scripts/verify_release_test.sh"
+
+python3 "$ROOT_DIR/scripts/tool_selection_test.py"

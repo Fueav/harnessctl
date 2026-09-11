@@ -67,7 +67,8 @@ env \
   GOBIN="$TMP_DIR/gobin" \
   FAKE_GO_LOG="$TMP_DIR/go.log" \
   "$ROOT_DIR/scripts/install_tools.sh"
-cat "$TMP_DIR/expected.log" "$TMP_DIR/expected.log" >"$TMP_DIR/reinstalled.log"
+cat "$TMP_DIR/expected.log" >"$TMP_DIR/reinstalled.log"
+sed -n '3p' "$TMP_DIR/expected.log" >>"$TMP_DIR/reinstalled.log"
 if ! diff -u "$TMP_DIR/reinstalled.log" "$TMP_DIR/go.log"; then
   fail "tampered cached harness tools were not reinstalled from pins"
 fi
