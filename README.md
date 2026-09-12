@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.7.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.8.0
 ```
 
 `resources run|status|gc` provides owned test services shared across Git worktrees, per-command data and bounded cleanup. Consumers declare `harness/dependencies.json`; see [the resource lifecycle contract](docs/test-resources.md).
@@ -113,7 +113,7 @@ The runner provides these variables:
 
 ## Proportional verification (v0.6)
 
-Profile schema 4 allows input-selected built-in checks using `path_prefixes` and optional `path_suffixes`. Change scope, boundary, secret and candidate identity checks cannot become conditional. Candidate and release gate sets can differ; required artifacts belong to the gate that produces them. Unchanged inputs may skip unrelated checks; release policies can keep checks unconditional. Schemas 1–3 retain their behavior.
+Profile schemas 4–5 allow input-selected built-in checks using `path_prefixes` and optional `path_suffixes`. Change scope, boundary, secret and candidate identity checks cannot become conditional. Candidate and release gate sets can differ; required artifacts belong to the gate that produces them. Schema 5 also permits basename suffixes such as `/AGENTS.md` for nested contracts and executes a required regular executable `evals/run.sh` whenever `prompt_evals` is selected, including development; that repository-owned validator must admit current executed behavior evidence. Declare instruction and evaluation inputs in the existing conditional rule. Evaluation files need not change just because instructions changed. Schemas 1–4 retain their existing prompt-check behavior.
 
 Spec index version 2 requires only `spec_id`, `module` and `status`; it does not require a workflow registry. Version 1 keeps legacy validation. Migrate the engine pin before removing the registry from consumers. Evidence still binds the exact commit, compare base, policy and runtime inputs.
 

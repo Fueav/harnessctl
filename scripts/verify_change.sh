@@ -69,6 +69,10 @@ else
 fi
 recorded_run ai_boundaries check_boundaries
 seal_artifact ai_boundaries.json
+if gate_enabled prompt_evals; then
+  recorded_run prompt_evals python3 -I -B -S "$ENGINE_DIR/check_prompt_evals.py" \
+    --repo "$ROOT_DIR" --snapshot "$SNAPSHOT_FILE" --snapshot-sha256 "$SNAPSHOT_SHA256"
+fi
 if gate_enabled spec_registry; then
   recorded_run spec_registry check_spec_registry
   seal_artifact spec_registry.json

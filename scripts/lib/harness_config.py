@@ -133,7 +133,9 @@ def _validate_conditional_gates(policy: Dict[str, Any], schema_version: int) -> 
             rule["path_prefixes"], f"Harness conditional gate {gate!r} path prefixes"
         )
         suffixes = _unique_strings(rule.get("path_suffixes", []), f"Harness conditional gate {gate!r} suffixes")
-        if any(not suffix.startswith(".") or any(c in suffix for c in "/\\\t\r\n") for suffix in suffixes):
+        if any(not (suffix.startswith(".") and not any(c in suffix for c in "/\\\t\r\n"))
+               and not (schema_version >= 5 and re.fullmatch(r"/[A-Za-z0-9_-][A-Za-z0-9_.-]*", suffix))
+               for suffix in suffixes):
             raise ConfigError(f"Harness conditional gate {gate!r} has invalid suffixes")
         for prefix in prefixes:
             if not prefix or any(character in prefix for character in "\t\r\n\\"):
@@ -201,7 +203,7 @@ def load_policy() -> Dict[str, Any]:
         raise ConfigError("Harness profile policy has an invalid schema")
     schema_version = policy["schema_version"]
     required = V1_KEYS if schema_version == 1 else V1_KEYS | {"custom_gates", "symlinks"}
-    if schema_version not in (1, 2, 3, 4) or set(policy) != required:
+    if schema_version not in (1, 2, 3, 4, 5) or set(policy) != required:
         raise ConfigError("Harness profile policy has an invalid schema")
     mapping_keys = (
         "conditional_gates", "evidence", "evidence_sets", "gate_artifacts",

@@ -114,17 +114,8 @@ check_migrations() {
 }
 
 check_prompt_evals() {
-  local file prompt_changed=0 eval_changed=0
-  while IFS= read -r -d '' file; do
-    [[ "$file" == prompts/* ]] && prompt_changed=1
-    [[ "$file" == evals/* ]] && eval_changed=1
-  done < <(changed_files_nul)
-  (( prompt_changed == 0 )) && return 0
-  (( eval_changed == 1 )) || {
-    printf 'prompt changes require eval changes under evals/\n' >&2
-    return 1
-  }
-  [[ ! -x "$ROOT_DIR/evals/run.sh" ]] || "$ROOT_DIR/evals/run.sh"
+  PYTHONDONTWRITEBYTECODE=1 python3 -I -B -S "$ENGINE_DIR/check_prompt_evals.py" \
+    --repo "$ROOT_DIR" --snapshot "$SNAPSHOT_FILE" --snapshot-sha256 "$SNAPSHOT_SHA256"
 }
 
 run_benchmarks() {

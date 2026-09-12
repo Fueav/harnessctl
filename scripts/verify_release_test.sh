@@ -257,6 +257,7 @@ setup_repo() {
     cp "$ROOT_DIR/scripts/verify_candidate.sh" "$REPO/scripts/verify_candidate.sh"
   fi
   cp "$ROOT_DIR/scripts/verify_change.sh" "$REPO/scripts/verify_change.sh"
+  cp "$ROOT_DIR/scripts/check_prompt_evals.py" "$REPO/scripts/check_prompt_evals.py"
   cp "$ROOT_DIR/scripts/finalize_approval.py" "$REPO/scripts/finalize_approval.py"
   cp "$ROOT_DIR/scripts/write_release_summary.py" "$REPO/scripts/write_release_summary.py"
   cp "$ROOT_DIR/scripts/collect_changes.py" "$REPO/scripts/collect_changes.py"
