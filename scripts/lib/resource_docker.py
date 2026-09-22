@@ -15,6 +15,9 @@ LABEL = 'io.harnessctl.'
 def stop_process_group(child):
     if not child:
         return
+    # A process group cannot survive a host reboot, even if its PID is reused.
+    if child['boot'] != process_identity(os.getpid())['boot']:
+        return
     current = process_identity(child['pid'])
     if current is not None and current != child:
         raise ResourceError('workload PID was reused; refusing to signal it')
