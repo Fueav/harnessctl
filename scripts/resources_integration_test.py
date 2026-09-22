@@ -19,6 +19,8 @@ def docker_proxy():
     args = sys.argv[2:]
     root = Path(os.environ['HARNESS_FIXTURE_FAULT_ROOT'])
     phase = os.environ['HARNESS_FIXTURE_FAULT_PHASE']
+    if phase == 'destroy-failure' and args[:2] == ['volume', 'rm']:
+        raise SystemExit(1)
     if phase in ('sample-once', 'sample-failure') and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
         if phase == 'sample-failure' or not (root / 'blocked').exists():
             (root / 'blocked').write_text('sampling failed')
@@ -86,10 +88,11 @@ def main():
     parser.add_argument('--child', type=Path)
     parser.add_argument('--hold', action='store_true')
     parser.add_argument('--workload', action='store_true')
+    parser.add_argument('--exit-code', type=int, default=0)
     args = parser.parse_args()
     if args.child:
         child(args.child, args.hold, args.workload)
-        return
+        raise SystemExit(args.exit_code)
     if not args.binary or not args.output or args.rounds < 1:
         parser.error('--binary, --output and a positive --rounds are required')
     binary = str(args.binary.resolve())
@@ -139,8 +142,8 @@ def main():
         if result.returncode:
             raise RuntimeError(result.stderr[-2400:])
         return result
-    def payload(hold=False, workload=False):
-        return ['--', sys.executable, str(Path(__file__).resolve()), '--child', str(root),
+    def payload(hold=False, workload=False, exit_code=0):
+        return ['--', sys.executable, str(Path(__file__).resolve()), '--child', str(root), '--exit-code', str(exit_code),
                 *(['--hold'] if hold else []), *(['--workload'] if workload else [])]
     def start(path=repo):
         process = subprocess.Popen([binary, 'resources', 'run', '--repo', str(path), '--state-root', str(state_root), *payload(True)],
@@ -159,12 +162,87 @@ def main():
                 raise RuntimeError('concurrent command exited prematurely: ' + ''.join(p.communicate()[1] for p in processes if p.poll() is not None))
             time.sleep(0.1)
         raise RuntimeError('concurrent commands did not become ready')
+    def assert_reclaimed():
+        current = state()
+        if current['runs'] or current['environments']:
+            raise RuntimeError('default completion left ownership records')
+        filters = ['--filter', 'label=io.harnessctl.project=' + current['project']]
+        for kind, args in (('containers', ['ps', '-aq']), ('networks', ['network', 'ls', '-q']),
+                           ('volumes', ['volume', 'ls', '-q'])):
+            if command(['docker', *args, *filters]):
+                raise RuntimeError('state was cleared but owned ' + kind + ' remain')
+        if list(state_root.glob('*/*.labels')) or list(state_root.glob('*/*.container.env')):
+            raise RuntimeError('run metadata survived cleanup')
+
     foreign = 'harness-it-foreign-' + uuid.uuid4().hex[:16]
     command(['docker', 'volume', 'create', '--label', 'fixture=foreign-to-harness', foreign])
     outcome = {'status': 'failed', 'rounds': args.rounds, 'fixture': str(root), 'cases': cases, 'observations': observations,
                'engine_version': version, 'engine_binary_sha256': hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
                'worktree_commits': [command(['git', '-C', str(path), 'rev-parse', 'HEAD']) for path in (repo, worktree)]}
     try:
+        # Omitted max_idle_environments exercises the engine default through a
+        # configuration-only consumer and real PostgreSQL/Redis writes.
+        for code in (0, 7):
+            result = cli('run', extra=payload(exit_code=code))
+            if result.returncode != code:
+                raise RuntimeError('default command status changed: ' + result.stderr[-1200:])
+            assert_reclaimed()
+        cases.append('default_success_and_failure_remove_containers_network_volumes_and_state')
+        first, second = start(), start(worktree)
+        active = wait_active(2)
+        if len({run['environment'] for run in active}) != 1:
+            raise RuntimeError('default concurrent tasks did not share services')
+        first.send_signal(signal.SIGTERM)
+        first.communicate(timeout=40)
+        processes.remove(first)
+        if first.returncode != 143 or len(state()['runs']) != 1 or not state()['environments']:
+            raise RuntimeError('first exit reclaimed resources occupied by a peer')
+        (root / 'release').write_text('release')
+        _, error = second.communicate(timeout=40)
+        if second.returncode:
+            raise RuntimeError('peer data was lost: ' + error[-1200:])
+        processes.clear()
+        (root / 'release').unlink()
+        assert_reclaimed()
+        cases.append('default_last_concurrent_exit_reclaims_services_and_preserves_peer_data')
+        for sig, entry in ((signal.SIGINT, 'supervisor'), (signal.SIGTERM, 'supervisor'),
+                           (signal.SIGINT, 'cli'), (signal.SIGTERM, 'cli'), (signal.SIGKILL, 'cli')):
+            process = start()
+            run = wait_active(1)[0]
+            os.kill(run['owner']['pid'] if entry == 'supervisor' else process.pid, sig)
+            _, error = process.communicate(timeout=45)
+            expected = -sig if sig == signal.SIGKILL else 128 + sig
+            if process.returncode != expected:
+                raise RuntimeError('default signal exit mismatch: ' + error[-1200:])
+            processes.clear()
+            deadline = time.monotonic() + 40
+            while (state()['runs'] or state()['environments']) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert_reclaimed()
+        cases.append('default_int_term_and_cli_kill9_reclaim_without_gc')
+        process = start()
+        run = wait_active(1)[0]
+        os.kill(run['owner']['pid'], signal.SIGKILL)
+        process.wait(timeout=10)
+        if not state()['runs']:
+            raise RuntimeError('supervisor kill fixture did not leave recoverable state')
+        require(cli('gc'))
+        process.communicate(timeout=10)
+        processes.clear()
+        assert_reclaimed()
+        cases.append('supervisor_kill9_requires_next_mutating_invocation')
+        failed = cli('run', extra=payload(), env=fault_env('destroy-failure'))
+        if failed.returncode == 0 or state()['runs'] or not any(
+                env['state'] == 'cleanup_pending' for env in state()['environments'].values()):
+            raise RuntimeError('environment deletion failure lost its recovery record')
+        require(cli('gc'))
+        require(cli('gc'))
+        assert_reclaimed()
+        cases.append('default_partial_environment_deletion_failure_retries_idempotently')
+        # Warm reuse is an explicit option, exercised separately from the default.
+        config['limits']['max_idle_environments'] = 1
+        for path in (repo, worktree):
+            (path / 'harness/dependencies.json').write_text(json.dumps(config))
         for index in range(args.rounds):
             require(cli('run', path=repo if index % 2 == 0 else worktree, extra=payload(workload=index % 10 == 0)))
             if state()['runs']:
@@ -333,6 +411,7 @@ def main():
         require(cli('run', extra=['--mode', 'fresh', *payload()]))
         if state()['runs'] or state()['environments']:
             raise RuntimeError('fresh mode did not remove all its resources')
+        assert_reclaimed()
         cases.append('fresh_release_environment_zero_residue')
         command(['docker', 'volume', 'inspect', foreign])
         cases.append('unowned_volume_preserved')

@@ -81,7 +81,77 @@ class LifecycleTests(unittest.TestCase):
         self.config['limits']['max_environments'] = 3
         self.manager = Manager(self.root, 'a' * 24, self.backend, self.config)
 
+    def test_default_release_removes_last_environment_and_is_idempotent(self):
+        self.assertEqual(validate_config({})['limits']['max_idle_environments'], 0)
+        first = self.manager.acquire('shared')
+        second = self.manager.acquire('shared')
+        self.manager.release(first['id'])
+        self.manager.gc(all_idle=True)
+        self.assertIn(second['environment'], self.backend.environments)
+        self.manager.release(second['id'])
+        self.manager.release(second['id'])
+        self.manager.gc()
+        self.assertEqual(self.backend.environments, {})
+        self.assertEqual(self.manager.read()['environments'], {})
+        self.assertEqual(self.manager.read()['runs'], {})
+
+    def test_legacy_idle_pool_is_reclaimed_on_next_run_with_new_default(self):
+        self.manager.config['limits']['max_idle_environments'] = 1
+        old = self.manager.acquire('shared')
+        self.manager.release(old['id'])
+        self.manager.config['limits']['max_idle_environments'] = 0
+        new = self.manager.acquire('shared')
+        self.assertNotIn(old['environment'], self.backend.environments)
+        self.manager.release(new['id'])
+        self.assertEqual(self.backend.environments, {})
+
+    def test_opt_in_idle_expiry_requires_a_mutating_invocation(self):
+        self.manager.config['limits']['max_idle_environments'] = 1
+        run = self.manager.acquire('shared')
+        self.manager.release(run['id'])
+        with patch('lib.resources.time.time', return_value=time.time() + 3601):
+            self.assertEqual(len(self.manager.status()['environments']), 1)
+            self.assertIn(run['environment'], self.backend.environments)
+            self.manager.gc()
+        self.assertEqual(self.backend.environments, {})
+
+    def test_idle_destroy_failure_preserves_intent_and_retries(self):
+        run = self.manager.acquire('shared')
+        with patch.object(self.backend, 'destroy', side_effect=ResourceError('daemon unavailable')):
+            with self.assertRaisesRegex(ResourceError, 'cleanup'):
+                self.manager.release(run['id'])
+            state = self.manager.read()
+            self.assertEqual(state['runs'], {})
+            self.assertEqual(state['environments'][run['environment']]['state'], 'cleanup_pending')
+            with self.assertRaisesRegex(ResourceError, 'cleanup'):
+                self.manager.acquire('shared')
+        self.manager.gc()
+        self.manager.gc()
+        self.assertEqual(self.backend.environments, {})
+        self.assertEqual(self.manager.read()['environments'], {})
+
+    def test_failed_acquisition_does_not_leave_an_idle_service(self):
+        for operation in ('health', 'allocate'):
+            with self.subTest(operation=operation):
+                with patch.object(self.backend, operation, side_effect=ResourceError('injected failure')):
+                    with self.assertRaises(ResourceError):
+                        self.manager.acquire('shared')
+                self.assertEqual(self.backend.environments, {})
+                self.assertEqual(self.manager.read()['environments'], {})
+                self.assertEqual(self.manager.read()['runs'], {})
+
+    def test_failed_allocation_preserves_a_concurrent_task(self):
+        live = self.manager.acquire('shared')
+        with patch.object(self.backend, 'allocate', side_effect=ResourceError('injected failure')):
+            with self.assertRaises(ResourceError):
+                self.manager.acquire('shared')
+        self.assertEqual(set(self.backend.runs), {live['id']})
+        self.assertEqual(set(self.backend.environments), {live['environment']})
+        self.manager.release(live['id'])
+        self.assertEqual(self.backend.environments, {})
+
     def test_hundred_serial_runs_reuse_services_without_retaining_databases(self):
+        self.manager.config['limits']['max_idle_environments'] = 1
         for _ in range(100):
             run = self.manager.acquire('shared')
             self.manager.release(run['id'])
@@ -109,6 +179,7 @@ class LifecycleTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=10) as executor:
             list(executor.map(lambda run: self.manager.release(run['id']), runs))
         self.assertEqual(self.backend.runs, {})
+        self.assertEqual(self.backend.environments, {})
 
     def test_corrupt_redis_slot_cannot_clear_another_database(self):
         run = self.manager.acquire('shared')
@@ -129,7 +200,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(len(self.backend.environments), 2)
         self.manager.release(first['id'])
         second_manager.release(second['id'])
-        self.assertEqual(len(self.backend.environments), 1)
+        self.assertEqual(len(self.backend.environments), 0)
 
     def test_cleanup_failure_is_recorded_and_blocks_new_allocations(self):
         run = self.manager.acquire('shared')
@@ -162,6 +233,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(self.backend.environments, {})
 
     def test_fresh_cleanup_does_not_consume_the_idle_shared_pool_retention_slot(self):
+        self.manager.config['limits']['max_idle_environments'] = 1
         warm = self.manager.acquire('shared')
         self.manager.release(warm['id'])
         fresh = self.manager.acquire('fresh')
@@ -216,6 +288,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn(live['environment'], self.backend.environments)
 
     def test_storage_pressure_recycles_only_idle_environments_before_admission(self):
+        self.manager.config['limits']['max_idle_environments'] = 1
         run = self.manager.acquire('shared')
         self.manager.release(run['id'])
         with patch.object(self.backend, 'usage', side_effect=lambda env: {
@@ -309,6 +382,25 @@ class DockerOwnershipTests(unittest.TestCase):
              patch('lib.resource_docker.os.killpg', side_effect=[None, PermissionError(1, 'Operation not permitted')]):
             stop_process_group(child)
 
+    def test_previous_boot_child_does_not_signal_a_reused_process_group(self):
+        child = {'pid': 1234, 'started': 'old', 'boot': 'previous'}
+        current = {'pid': 1234, 'started': 'new', 'boot': 'current'}
+        with patch('lib.resource_docker.process_identity', return_value=current), \
+             patch('lib.resource_docker.os.killpg') as kill, \
+             patch('lib.resource_docker.subprocess.run') as ps:
+            stop_process_group(child)
+        kill.assert_not_called()
+        ps.assert_not_called()
+
+    def test_same_boot_reused_pid_is_preserved(self):
+        child = {'pid': 1234, 'started': 'old', 'boot': 'same'}
+        current = {**child, 'started': 'new'}
+        with patch('lib.resource_docker.process_identity', return_value=current), \
+             patch('lib.resource_docker.os.killpg') as kill:
+            with self.assertRaisesRegex(ResourceError, 'reused'):
+                stop_process_group(child)
+        kill.assert_not_called()
+
     def test_docker_missing_volume_is_an_idempotent_success(self):
         result = type('Result', (), {'returncode': 1, 'stdout': '',
                                     'stderr': 'Error response from daemon: get fixture: no such volume'})()
@@ -374,6 +466,20 @@ class SupervisorTests(unittest.TestCase):
                 resources.execute(manager, backend, args)
             self.assertEqual(backend.created, 0)
 
+    def test_success_and_failure_remove_services_before_returning(self):
+        import argparse
+        import resources
+        for code in (0, 7):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
+                backend = FakeDocker()
+                manager = Manager(directory, 'a' * 24, backend, default_config())
+                args = argparse.Namespace(mode='shared', retain_on_failure=0,
+                                          command=[sys.executable, '-c', f'raise SystemExit({code})'])
+                self.assertEqual(resources.execute(manager, backend, args), code)
+                self.assertEqual(backend.environments, {})
+                self.assertEqual(manager.read()['environments'], {})
+                self.assertEqual(manager.read()['runs'], {})
+
     def test_cleanup_failure_does_not_relabel_a_successful_command_as_failed(self):
         import argparse
         import resources
@@ -430,6 +536,7 @@ sys.exit(execute(manager, backend, args))
                     _, error = process.communicate(timeout=10)
                     self.assertEqual(process.returncode, 128 + sig, error)
                     self.assertEqual(json.loads(path.read_text())['runs'], {})
+                    self.assertEqual(json.loads(path.read_text())['environments'], {})
                     self.assertEqual(json.loads((Path(directory) / 'last-result.json').read_text())['cleanup'], 'passed')
                 finally:
                     if process.poll() is None:

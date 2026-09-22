@@ -36,7 +36,7 @@ def default_config():
                      'memory_mb': 1024, 'cpus': 2, 'max_connections': 120,
                      'wal_mb': 256, 'checkpoint_seconds': 60},
         'redis': {'image': 'redis:7-alpine', 'memory_mb': 256, 'cpus': 1},
-        'limits': {'max_runs': 4, 'max_environments': 2, 'max_idle_environments': 1,
+        'limits': {'max_runs': 4, 'max_environments': 2, 'max_idle_environments': 0,
                    'idle_seconds': 3600, 'max_storage_bytes': 8 * 1024**3,
                    'min_free_bytes': 5 * 1024**3, 'wait_seconds': 60,
                    'max_run_seconds': 3600, 'sample_seconds': 10,
@@ -323,7 +323,11 @@ class Manager:
                 except Exception as error:
                     self.destroy(state, env)
                     raise ResourceError('dependency creation failed') from error
-            self.backend.health(env)
+            try:
+                self.backend.health(env)
+            except Exception:
+                self.prune_idle(state)
+                raise
             try:
                 self.budget(state)
             except ResourceError:
@@ -343,6 +347,7 @@ class Manager:
                 self.backend.allocate(env, run)
             except Exception as error:
                 self.cleanup_run(state, run)
+                self.prune_idle(state)
                 raise ResourceError('run data allocation failed') from error
             run['state'] = 'active'
             self.save(state)

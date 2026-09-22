@@ -5,7 +5,7 @@
 ## Install
 
 ```bash
-go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.8.0
+go install github.com/Fueav/harnessctl/cmd/harnessctl@v0.8.1
 ```
 
 `resources run|status|gc` provides owned test services shared across Git worktrees, per-command data and bounded cleanup. Consumers declare `harness/dependencies.json`; see [the resource lifecycle contract](docs/test-resources.md).
