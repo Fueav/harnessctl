@@ -345,6 +345,101 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(current['boot'])
 
 
+class StorageSamplingTests(unittest.TestCase):
+    def setUp(self):
+        self.backend = Docker(Path('/unused'))
+        self.now = 0.0
+        self.delays = []
+        self.clock = patch('lib.resource_docker.time.monotonic', side_effect=lambda: self.now)
+        self.sleep = patch('lib.resource_docker.time.sleep', side_effect=self.advance)
+        self.clock.start()
+        self.sleep.start()
+        self.addCleanup(self.clock.stop)
+        self.addCleanup(self.sleep.stop)
+
+    def advance(self, seconds):
+        self.delays.append(seconds)
+        self.now += seconds
+
+    def result(self, code=0, output='12\t/data', error=''):
+        return subprocess.CompletedProcess(['docker'], code, output, error)
+
+    def churn(self, error="du: can't stat '/data/base/123/456': No such file or directory"):
+        return self.result(1, '1\t/data', error)
+
+    def test_disappearing_files_retry_beyond_three_attempts_without_partial_totals(self):
+        for diagnostic in ("du: can't stat '/data/base/123/456': No such file or directory",
+                           "du: cannot access '/data/base/123/456': No such file or directory",
+                           'du: /data/base/123/456: No such file or directory'):
+            with self.subTest(diagnostic=diagnostic), patch('lib.resource_docker.subprocess.run',
+                    side_effect=[self.churn(diagnostic)] * 5 + [self.result()]) as run:
+                self.assertEqual(self.backend.disk_bytes('fixture', 'du', '/data'), 12 * 1024)
+                self.assertEqual(run.call_count, 6)
+        self.assertGreater(max(self.delays), 0.1)
+        self.assertLessEqual(max(self.delays), 1)
+
+    def test_persistent_file_churn_uses_one_total_deadline(self):
+        timeouts = []
+        def failed(*args, **kwargs):
+            timeouts.append(kwargs['timeout'])
+            self.now += min(0.5, kwargs['timeout'])
+            return self.churn()
+        with patch('lib.resource_docker.subprocess.run', side_effect=failed) as run:
+            with self.assertRaisesRegex(ResourceError, 'sampling.*deadline'):
+                self.backend.disk_bytes('fixture', 'du', '/data')
+        self.assertGreater(run.call_count, 3)
+        self.assertLessEqual(self.now, 30)
+        self.assertTrue(all(0 < value <= 10 for value in timeouts))
+        self.assertLess(timeouts[-1], timeouts[0])
+
+    def test_permission_missing_root_and_other_errors_fail_without_retry(self):
+        for error in ("du: can't open '/data/base': Permission denied",
+                      "du: can't stat '/data/base/1': No such file or directory\ndu: '/data/base/2': Permission denied",
+                      "du: can't stat '/data': No such file or directory",
+                      "du: can't stat '/data/': No such file or directory",
+                      "du: can't stat '/other/file': No such file or directory",
+                      'Cannot connect to the Docker daemon', '',
+                      "df: '/data/base/1': No such file or directory"):
+            with self.subTest(error=error), patch('lib.resource_docker.subprocess.run',
+                    return_value=self.result(1, '1\t/data', error)) as run:
+                with self.assertRaisesRegex(ResourceError, 'sampling failed') as raised:
+                    self.backend.disk_bytes('fixture', 'du', '/data')
+                if error:
+                    self.assertNotIn(error, str(raised.exception))
+                self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.delays, [])
+
+    def test_invalid_measurements_fail_without_retry(self):
+        for program, output in (('du', 'invalid'), ('du', '-1\t/data'), ('du', '1\t/other'),
+                                ('du', 'warning\n12\t/data'), ('du', '+1\t/data'),
+                                ('df', 'Filesystem\n/dev/sda 100 20 -1 20% /data'),
+                                ('df', 'warning\n/dev/sda 100 20 80 20% /data'),
+                                ('df', '/dev/sda 100 20 80 20% /data'),
+                                ('df', 'Filesystem\n/dev/sda invalid 20 80 20% /data')):
+            with self.subTest(program=program, output=output), patch('lib.resource_docker.subprocess.run',
+                    return_value=self.result(output=output)) as run:
+                with self.assertRaisesRegex(ResourceError, 'sampling failed'):
+                    self.backend.disk_bytes('fixture', program, '/data')
+                self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.delays, [])
+
+    def test_timeout_is_not_retried_or_reported_as_a_measurement(self):
+        with patch('lib.resource_docker.subprocess.run',
+                   side_effect=subprocess.TimeoutExpired(['docker'], 10)) as run:
+            with self.assertRaisesRegex(ResourceError, 'sampling failed'):
+                self.backend.disk_bytes('fixture', 'du', '/data')
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.delays, [])
+
+    def test_late_success_is_rejected_after_the_total_deadline(self):
+        def late(*args, **kwargs):
+            self.now = 31
+            return self.result()
+        with patch('lib.resource_docker.subprocess.run', side_effect=late):
+            with self.assertRaisesRegex(ResourceError, 'sampling.*deadline'):
+                self.backend.disk_bytes('fixture', 'du', '/data')
+
+
 class DockerOwnershipTests(unittest.TestCase):
     def test_postgres_init_only_socket_is_not_a_ready_dependency(self):
         backend = Docker(Path('/unused'))
@@ -414,19 +509,19 @@ class DockerOwnershipTests(unittest.TestCase):
             with self.assertRaises(ResourceError):
                 Docker(Path('/unused')).call(['volume', 'inspect', 'fixture'], missing=True)
 
-    def test_storage_sampling_retries_a_failed_read_before_using_a_complete_measurement(self):
+    def test_storage_usage_aggregates_complete_measurements(self):
         backend = Docker(Path('/unused'))
         env = {'name': 'fixture', 'config': {'postgres': {}, 'redis': {}}}
         with patch.object(backend, 'inspect'), patch('lib.resource_docker.time.sleep'), \
-             patch.object(backend, 'call', side_effect=[ResourceError('query failed'), '12\t/data',
+             patch.object(backend, 'call', side_effect=['12\t/data',
                                                        'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda 100 20 80 20% /data',
-                                                       '0\t/data', '/dev/sda 100 20 80 20% /data']) as call:
+                                                       '0\t/data', 'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda 100 20 80 20% /data']) as call:
             usage = backend.usage(env)
         self.assertEqual(usage['postgres_bytes'], 12 * 1024)
         self.assertEqual(usage['docker_free_bytes'], 80 * 1024)
-        self.assertEqual(call.call_count, 5)
+        self.assertEqual(call.call_count, 4)
 
-    def test_persistent_or_invalid_storage_measurements_fail_closed_after_bounded_retries(self):
+    def test_unclassified_or_invalid_storage_measurements_fail_closed_without_retry(self):
         for value in (ResourceError('daemon unavailable'), 'invalid', '-1\t/data'):
             with self.subTest(value=str(value)):
                 backend = Docker(Path('/unused'))
@@ -436,7 +531,7 @@ class DockerOwnershipTests(unittest.TestCase):
                      patch.object(backend, 'call', **effect) as call:
                     with self.assertRaisesRegex(ResourceError, 'sampling failed'):
                         backend.usage(env)
-                self.assertEqual(call.call_count, 3)
+                self.assertEqual(call.call_count, 1)
 
     def test_storage_sampler_does_not_retry_or_ignore_an_ownership_conflict(self):
         backend = Docker(Path('/unused'))
