@@ -12,6 +12,34 @@ from .resources import ResourceError, process_identity
 LABEL = 'io.harnessctl.'
 
 
+class _DiskFileDisappeared(ResourceError):
+    pass
+
+
+def _disappeared_du_files(args, stderr):
+    if len(args) != 5 or args[0] != 'exec' or args[2:4] != ['du', '-sk']:
+        return False
+    diagnostics = stderr.splitlines()
+    if not diagnostics:
+        return False
+    prefix = args[4].rstrip('/') + '/'
+    for diagnostic in diagnostics:
+        if not diagnostic.startswith('du: ') or not diagnostic.endswith(': No such file or directory'):
+            return False
+        path = diagnostic[len('du: '):-len(': No such file or directory')]
+        for operation in ("can't stat ", 'cannot access '):
+            if path.startswith(operation):
+                path = path[len(operation):]
+                break
+        for opening, closing in (("'", "'"), ('"', '"'), ('‘', '’'), ('`', "'")):
+            if path.startswith(opening) and path.endswith(closing):
+                path = path[1:-1]
+                break
+        if not path.startswith(prefix) or path == prefix or '..' in path.split('/'):
+            return False
+    return True
+
+
 def stop_process_group(child):
     if not child:
         return
@@ -66,6 +94,8 @@ class Docker:
             absent = re.search(r'no such (?:object|volume|container|image|network)\b|network .+ not found', result.stderr.lower())
             if missing and absent:
                 return None
+            if result.returncode == 1 and _disappeared_du_files(args, result.stderr):
+                raise _DiskFileDisappeared('du encountered disappearing files')
             # Never print CLI arguments, SQL or daemon output containing credentials.
             raise ResourceError('Docker operation failed: ' + ' '.join(args[:2]))
         return result.stdout.strip()
@@ -266,20 +296,41 @@ class Docker:
 
     def disk_bytes(self, container, program, path):
         option, column = {'du': ('-sk', 0), 'df': ('-Pk', 3)}[program]
-        # A read can fail while PostgreSQL removes files or Docker is briefly
-        # busy. Require a complete successful measurement; never accept partial
-        # output or retry mutations; each of three attempts has a ten-second limit.
-        for attempt in range(3):
+        # Only a failed du scan whose diagnostics all identify disappearing
+        # descendants is transient. Never accept its partial stdout. One deadline
+        # bounds calls and backoff together; other failures remain fail-closed.
+        deadline, delay = time.monotonic() + 30, 0.1
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ResourceError(program + ' storage sampling deadline exceeded')
             try:
-                output = self.call(['exec', container, program, option, path], timeout=10)
-                value = int(output.splitlines()[-1].split()[column])
-                if value < 0:
-                    raise ValueError('negative disk measurement')
-                return value * 1024
-            except (ResourceError, ValueError, IndexError) as error:
-                if attempt == 2:
-                    raise ResourceError(program + ' storage sampling failed after 3 attempts') from error
-                time.sleep(0.1)
+                output = self.call(['exec', container, program, option, path], timeout=min(10, remaining))
+            except _DiskFileDisappeared as error:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ResourceError(program + ' storage sampling deadline exceeded') from error
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, 1)
+                continue
+            except ResourceError as error:
+                raise ResourceError(program + ' storage sampling failed') from error
+            if time.monotonic() >= deadline:
+                raise ResourceError(program + ' storage sampling deadline exceeded')
+            try:
+                lines = output.splitlines()
+                fields = lines[-1].split()
+                if program == 'du' and (len(lines) != 1 or len(fields) != 2 or fields[1] != path):
+                    raise ValueError('invalid du measurement')
+                if program == 'df' and (len(lines) != 2 or not lines[0].startswith('Filesystem ')
+                                        or len(fields) != 6 or not re.fullmatch(r'[0-9]+%', fields[4])
+                                        or any(not re.fullmatch(r'[0-9]+', value) for value in fields[1:4])):
+                    raise ValueError('invalid df measurement')
+                if not re.fullmatch(r'[0-9]+', fields[column]):
+                    raise ValueError('invalid disk measurement')
+                return int(fields[column]) * 1024
+            except (ValueError, IndexError) as error:
+                raise ResourceError(program + ' storage sampling failed') from error
 
     def usage(self, env):
         usage = {'storage_bytes': 0, 'service_log_budget_bytes': 60 * 1024**2}

@@ -19,12 +19,21 @@ def docker_proxy():
     args = sys.argv[2:]
     root = Path(os.environ['HARNESS_FIXTURE_FAULT_ROOT'])
     phase = os.environ['HARNESS_FIXTURE_FAULT_PHASE']
+    if phase == 'observe-sampling' and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
+        result = subprocess.run([os.environ['HARNESS_FIXTURE_DOCKER'], *args], text=True, capture_output=True)
+        with (root / 'sampling.jsonl').open('a') as output:
+            output.write(json.dumps({'exit_code': result.returncode}) + '\n')
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        raise SystemExit(result.returncode)
     if phase == 'destroy-failure' and args[:2] == ['volume', 'rm']:
         raise SystemExit(1)
     if phase in ('sample-once', 'sample-failure') and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
-        if phase == 'sample-failure' or not (root / 'blocked').exists():
-            (root / 'blocked').write_text('sampling failed')
+        failures = int((root / 'blocked').read_text()) if (root / 'blocked').exists() else 0
+        if phase == 'sample-failure' or failures < 5:
+            (root / 'blocked').write_text(str(failures + 1))
             print('1\t/data')  # A failed scan's partial total must not be accepted.
+            print("du: can't stat '" + args[-1].rstrip('/') + "/base/fixture-relation': No such file or directory", file=sys.stderr)
             raise SystemExit(1)
     data = sys.stdin.read() if args[:2] == ['exec', '-i'] and 'psql' in args else None
     matched = bool(data and data.startswith('CREATE DATABASE' if phase == 'allocation' else 'DROP DATABASE'))
@@ -47,7 +56,7 @@ def command(argv, **kwargs):
     return result.stdout.strip()
 
 
-def child(root, hold, workload):
+def child(root, hold, workload, ddl=False):
     run = os.environ['HARNESS_RESOURCE_RUN_ID']
     prefix = os.environ['HARNESS_RESOURCE_NETWORK'].removesuffix('-net')
     dsn = urllib.parse.urlsplit(os.environ['TEST_DATABASE_DSN'])
@@ -69,6 +78,12 @@ def child(root, hold, workload):
         mounts = json.loads(command(['docker', 'inspect', name, '--format', '{{json .Mounts}}']))
         (root / (run + '.workload.json')).write_text(json.dumps({'container': name, 'volumes': [m['Name'] for m in mounts if m['Type'] == 'volume']}))
     (root / (run + '.ready')).write_text('ready')
+    if ddl:
+        (root / (run + '.ddl-started')).write_text('started')
+        statement = ("CREATE TABLE churn(payload text); INSERT INTO churn VALUES(repeat('x',8192)); "
+                     "DROP TABLE churn; SELECT pg_sleep(0.004);\n")
+        command(pg, input=statement * 2500, env=pg_env)
+        (root / (run + '.ddl-finished')).write_text('finished')
     while hold and not (root / 'release').exists():
         time.sleep(0.1)
     if command(redis + ['GET', 'same-key'], env=redis_env) != run:
@@ -88,10 +103,11 @@ def main():
     parser.add_argument('--child', type=Path)
     parser.add_argument('--hold', action='store_true')
     parser.add_argument('--workload', action='store_true')
+    parser.add_argument('--ddl', action='store_true')
     parser.add_argument('--exit-code', type=int, default=0)
     args = parser.parse_args()
     if args.child:
-        child(args.child, args.hold, args.workload)
+        child(args.child, args.hold, args.workload, args.ddl)
         raise SystemExit(args.exit_code)
     if not args.binary or not args.output or args.rounds < 1:
         parser.error('--binary, --output and a positive --rounds are required')
@@ -142,9 +158,9 @@ def main():
         if result.returncode:
             raise RuntimeError(result.stderr[-2400:])
         return result
-    def payload(hold=False, workload=False, exit_code=0):
+    def payload(hold=False, workload=False, exit_code=0, ddl=False):
         return ['--', sys.executable, str(Path(__file__).resolve()), '--child', str(root), '--exit-code', str(exit_code),
-                *(['--hold'] if hold else []), *(['--workload'] if workload else [])]
+                *(['--hold'] if hold else []), *(['--workload'] if workload else []), *(['--ddl'] if ddl else [])]
     def start(path=repo):
         process = subprocess.Popen([binary, 'resources', 'run', '--repo', str(path), '--state-root', str(state_root), *payload(True)],
                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -205,6 +221,40 @@ def main():
         (root / 'release').unlink()
         assert_reclaimed()
         cases.append('default_last_concurrent_exit_reclaims_services_and_preserves_peer_data')
+        # Exercise actual PostgreSQL relation creation/unlinking while the native
+        # sampler runs. The proxy observes exit codes without injecting failures.
+        sampling_env = fault_env('observe-sampling')
+        process = subprocess.Popen([binary, 'resources', 'run', '--repo', str(repo), '--state-root', str(state_root),
+                                    *payload(hold=True, ddl=True)], env=sampling_env,
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        processes.append(process)
+        writer = wait_active(1)[0]
+        deadline = time.monotonic() + 20
+        while not (root / (writer['id'] + '.ddl-started')).exists():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                raise RuntimeError('DDL fixture did not start')
+            time.sleep(0.05)
+        overlapping = 0
+        for _ in range(10):
+            overlapping += not (root / (writer['id'] + '.ddl-finished')).exists()
+            report = json.loads(require(cli('status', env=sampling_env)).stdout)
+            if {run['id'] for run in report['runs']} != {writer['id']} or any(
+                    env['usage']['postgres_bytes'] <= 0 for env in report['environments']):
+                raise RuntimeError('DDL sampling lost the active owner or accepted an empty measurement')
+        if not overlapping:
+            raise RuntimeError('sampling did not overlap actual DDL')
+        (root / 'release').write_text('release')
+        _, error = process.communicate(timeout=60)
+        if process.returncode or not (root / (writer['id'] + '.ddl-finished')).exists():
+            raise RuntimeError('DDL sampling affected writer completion: ' + error[-1200:])
+        processes.clear()
+        (root / 'release').unlink()
+        assert_reclaimed()
+        samples = [json.loads(line) for line in (fault_root / 'sampling.jsonl').read_text().splitlines()]
+        observations.append({'case': 'concurrent_ddl_sampling', 'ddl_cycles': 2500,
+                             'overlapping_checks': overlapping, 'du_attempts': len(samples),
+                             'failed_du_attempts': sum(sample['exit_code'] != 0 for sample in samples)})
+        cases.append('actual_concurrent_postgres_ddl_sampling_preserves_complete_measurements_and_owned_data')
         for sig, entry in ((signal.SIGINT, 'supervisor'), (signal.SIGTERM, 'supervisor'),
                            (signal.SIGINT, 'cli'), (signal.SIGTERM, 'cli'), (signal.SIGKILL, 'cli')):
             process = start()
