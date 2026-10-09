@@ -334,8 +334,10 @@ class Docker:
 
     def usage(self, env):
         usage = {'storage_bytes': 0, 'service_log_budget_bytes': 60 * 1024**2}
+        # Validate all ownership before any measurement can become pressure.
         for service in ('postgres', 'redis'):
             self.inspect('container', env['name'] + '-' + service, env, service)
+        for service in ('postgres', 'redis'):
             path = env['config'][service].get('data_path', '/data')
             try:
                 usage[service + '_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'du', path)

@@ -454,6 +454,16 @@ class StorageSamplingTests(unittest.TestCase):
             self.assertNotIsInstance(raised.exception, BudgetExceeded)
             sample.assert_not_called()
 
+    def test_usage_checks_all_ownership_before_any_fallible_measurement(self):
+        environment = {'name': 'fixture', 'config': default_config()}
+        with patch.object(self.backend, 'inspect', side_effect=[None, ResourceError('redis ownership mismatch')]) as inspect, \
+                patch.object(self.backend, 'disk_bytes', side_effect=ResourceError('postgres sampling failed')) as sample:
+            with self.assertRaisesRegex(ResourceError, 'redis ownership mismatch') as raised:
+                self.backend.usage(environment)
+            self.assertNotIsInstance(raised.exception, BudgetExceeded)
+            self.assertEqual(inspect.call_count, 2)
+            sample.assert_not_called()
+
 
 class DockerOwnershipTests(unittest.TestCase):
     def test_postgres_init_only_socket_is_not_a_ready_dependency(self):
