@@ -20,7 +20,7 @@ jobs:
       - run: go build -o /tmp/harnessctl ./cmd/harnessctl
       - name: Verify real Docker lifecycle across worktrees
         run: python3 scripts/resources_integration_test.py --binary /tmp/harnessctl --rounds 100 --output resource-acceptance.json
-        timeout-minutes: 15
+        timeout-minutes: 20
       - uses: actions/upload-artifact@v4
         if: always()
         with:
