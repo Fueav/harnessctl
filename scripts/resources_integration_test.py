@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import subprocess
@@ -28,9 +29,10 @@ def docker_proxy():
         raise SystemExit(result.returncode)
     if phase == 'destroy-failure' and args[:2] == ['volume', 'rm']:
         raise SystemExit(1)
-    if phase in ('sample-once', 'sample-failure') and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
+    if (phase in ('sample-once', 'sample-failure') or phase == 'runtime-sample-failure' and (root / 'sample-armed').exists()) \
+            and len(args) > 2 and args[0] == 'exec' and args[2] == 'du':
         failures = int((root / 'blocked').read_text()) if (root / 'blocked').exists() else 0
-        if phase == 'sample-failure' or failures < 5:
+        if phase != 'sample-once' or failures < 5:
             (root / 'blocked').write_text(str(failures + 1))
             print('1\t/data')  # A failed scan's partial total must not be accepted.
             print("du: can't stat '" + args[-1].rstrip('/') + "/base/fixture-relation': No such file or directory", file=sys.stderr)
@@ -141,7 +143,7 @@ def main():
     proxy.write_text(f'#!{sys.executable}\nimport os,sys\nos.execv(sys.executable,[sys.executable,{str(Path(__file__).resolve())!r},"--docker-proxy",*sys.argv[1:]])\n')
     proxy.chmod(0o700)
     def fault_env(phase):
-        for name in ('blocked', 'resume'):
+        for name in ('blocked', 'resume', 'sample-armed'):
             (fault_root / name).unlink(missing_ok=True)
         return {**os.environ, 'PATH': str(fault_root) + os.pathsep + os.environ['PATH'],
                 'HARNESS_FIXTURE_DOCKER': shutil.which('docker'),
@@ -161,9 +163,9 @@ def main():
     def payload(hold=False, workload=False, exit_code=0, ddl=False):
         return ['--', sys.executable, str(Path(__file__).resolve()), '--child', str(root), '--exit-code', str(exit_code),
                 *(['--hold'] if hold else []), *(['--workload'] if workload else []), *(['--ddl'] if ddl else [])]
-    def start(path=repo):
+    def start(path=repo, env=None):
         process = subprocess.Popen([binary, 'resources', 'run', '--repo', str(path), '--state-root', str(state_root), *payload(True)],
-                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         processes.append(process)
         return process
     def wait_active(count):
@@ -189,6 +191,28 @@ def main():
                 raise RuntimeError('state was cleared but owned ' + kind + ' remain')
         if list(state_root.glob('*/*.labels')) or list(state_root.glob('*/*.container.env')):
             raise RuntimeError('run metadata survived cleanup')
+
+    def assert_live_data(run, path):
+        environment = state()['environments'][run['environment']]
+        version = command(['docker', 'exec', environment['name'] + '-postgres', 'psql', '-X', '-U', 'postgres',
+                           '-d', run['database'], '-At', '-c', 'SELECT version FROM sample;'])
+        value = command(['docker', 'exec', environment['name'] + '-redis', 'sh', '-c',
+                         'export REDISCLI_AUTH="$HARNESS_REDIS_PASSWORD"; exec redis-cli --raw -n "$1" GET same-key',
+                         '--', str(run['redis_dbs'][0])])
+        if version != (path / 'version.txt').read_text().strip() or value != run['id']:
+            raise RuntimeError('runtime storage pressure changed actual active data')
+
+    def wait_pressure(process):
+        deadline, observed = time.monotonic() + 75, ''
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([process.stderr], [], [], 0.1)
+            if readable:
+                observed += os.read(process.stderr.fileno(), 8192).decode()
+                if 'resources: admission blocked:' in observed:
+                    return
+            if process.poll() is not None:
+                raise RuntimeError('runtime sampling terminated an active command: ' + observed[-1200:])
+        raise RuntimeError('runtime sampling did not report bounded admission pressure')
 
     foreign = 'harness-it-foreign-' + uuid.uuid4().hex[:16]
     command(['docker', 'volume', 'create', '--label', 'fixture=foreign-to-harness', foreign])
@@ -397,6 +421,86 @@ def main():
         processes.clear()
         (root / 'release').unlink()
         cases.append('kill_during_allocation_and_cleanup_serializes_inflight_rpc_and_preserves_active_data')
+
+        saved_limits = dict(config['limits'])
+        config['limits']['sample_seconds'] = 1
+        for path in (repo, worktree):
+            (path / 'harness/dependencies.json').write_text(json.dumps(config))
+        runtime_env = fault_env('runtime-sample-failure')
+        measured, peer = start(env=runtime_env), start(worktree)
+        active = wait_active(2)
+        # The readiness marker is written by each child after its real PG/Redis
+        # writes. The distinct migration value identifies the two worktrees.
+        by_version = {}
+        for run in active:
+            environment = state()['environments'][run['environment']]
+            version = command(['docker', 'exec', environment['name'] + '-postgres', 'psql', '-X', '-U', 'postgres',
+                               '-d', run['database'], '-At', '-c', 'SELECT version FROM sample;'])
+            if version not in ('1', '2') or version in by_version:
+                raise RuntimeError('runtime fixture did not isolate both migration versions')
+            by_version[version] = run
+        measured_run, peer_run = by_version['1'], by_version['2']
+        live_ids = {run['id'] for run in active}
+        fault_started = time.monotonic()
+        (fault_root / 'sample-armed').write_text('persistent descendant ENOENT')
+        wait_pressure(measured)
+        rejected = cli('run', extra=payload(), env=runtime_env)
+        if rejected.returncode == 0 or set(state()['runs']) != live_ids or measured.poll() is not None or peer.poll() is not None:
+            raise RuntimeError('runtime pressure admitted work or terminated a concurrent active command')
+        assert_live_data(measured_run, repo)
+        assert_live_data(peer_run, worktree)
+        observations.append({'case': 'runtime_sampling_failure', 'failure_seconds': round(time.monotonic() - fault_started, 3),
+                             'failed_du_attempts': int((fault_root / 'blocked').read_text()),
+                             'active_runs_preserved': 2, 'actual_pg_and_redis_data_preserved': True, 'new_admission_rejected': True})
+        cases.append('runtime_persistent_sampling_failure_preserves_concurrent_data_and_blocks_admission')
+        (fault_root / 'sample-armed').unlink()
+        require(cli('run', extra=payload(), env=runtime_env))
+        if set(state()['runs']) != live_ids:
+            raise RuntimeError('sampling recovery replaced active owners')
+        assert_live_data(measured_run, repo)
+        assert_live_data(peer_run, worktree)
+        cases.append('runtime_sampling_recovers_and_resumes_admission_without_resetting_active_data')
+        measured.send_signal(signal.SIGTERM)
+        _, error = measured.communicate(timeout=40)
+        processes.remove(measured)
+        if measured.returncode != 143 or set(state()['runs']) != {peer_run['id']}:
+            raise RuntimeError('explicit abort after runtime pressure did not clean only its own task: ' + error[-1200:])
+        assert_live_data(peer_run, worktree)
+        (root / 'release').write_text('release')
+        if peer.wait(timeout=40):
+            raise RuntimeError('runtime pressure or peer abort changed the surviving task data')
+        processes.remove(peer)
+        (root / 'release').unlink()
+        cases.append('explicit_abort_after_runtime_pressure_cleans_own_data_and_preserves_peer')
+        config['limits']['max_run_seconds'] = 20
+        (repo / 'harness/dependencies.json').write_text(json.dumps(config))
+        runtime_env = fault_env('runtime-sample-failure')
+        timed = start(env=runtime_env)
+        timed_run = wait_active(1)[0]
+        assert_live_data(timed_run, repo)
+        (fault_root / 'sample-armed').write_text('persistent descendant ENOENT')
+        _, error = timed.communicate(timeout=75)
+        processes.remove(timed)
+        summaries = [json.loads(line[len('resources: '):]) for line in error.splitlines() if line.startswith('resources: {')]
+        if timed.returncode != 124 or not summaries or summaries[-1]['command_exit_code'] != 124 \
+                or summaries[-1]['cleanup'] != 'passed' or not summaries[-1]['budget_pressure'] \
+                or summaries[-1]['elapsed_seconds'] < 20 or state()['runs']:
+            raise RuntimeError('runtime pressure bypassed the task timeout or cleanup: ' + error[-1200:])
+        environment = state()['environments'][timed_run['environment']]
+        count = command(['docker', 'exec', environment['name'] + '-postgres', 'psql', '-X', '-U', 'postgres', '-At',
+                         '-c', "SELECT count(*) FROM pg_database WHERE datname LIKE 'hc_%';"])
+        if count != '0':
+            raise RuntimeError('timed-out task retained its actual database')
+        for db in timed_run['redis_dbs']:
+            size = command(['docker', 'exec', environment['name'] + '-redis', 'sh', '-c',
+                            'export REDISCLI_AUTH="$HARNESS_REDIS_PASSWORD"; exec redis-cli --raw -n "$1" DBSIZE', '--', str(db)])
+            if size != '0':
+                raise RuntimeError('timed-out task retained actual Redis data')
+        cases.append('persistent_runtime_sampling_pressure_obeys_own_timeout_and_reclaims_actual_data')
+        (fault_root / 'sample-armed').unlink()
+        config['limits'] = saved_limits
+        for path in (repo, worktree):
+            (path / 'harness/dependencies.json').write_text(json.dumps(config))
         broken_env = fault_env('cleanup-failure')
         failed = cli('run', extra=payload(), env=broken_env)
         if failed.returncode == 0 or not any(run['state'] == 'cleanup_pending' for run in state()['runs'].values()):

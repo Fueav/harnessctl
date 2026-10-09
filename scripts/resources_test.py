@@ -14,7 +14,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.resources import Manager, ResourceError, default_config, fingerprint, process_identity, validate_config
+from lib.resources import BudgetExceeded, Manager, ResourceError, default_config, fingerprint, process_identity, validate_config
 from lib.resource_docker import Docker, LABEL, stop_process_group
 
 
@@ -439,6 +439,21 @@ class StorageSamplingTests(unittest.TestCase):
             with self.assertRaisesRegex(ResourceError, 'sampling.*deadline'):
                 self.backend.disk_bytes('fixture', 'du', '/data')
 
+    def test_usage_sampling_failures_are_pressure_but_ownership_errors_are_not(self):
+        environment = {'name': 'fixture', 'config': default_config()}
+        for samples in ([ResourceError('du storage sampling deadline exceeded')],
+                        [1024, ResourceError('df storage sampling failed')]):
+            with self.subTest(samples=len(samples)), patch.object(self.backend, 'inspect'), \
+                    patch.object(self.backend, 'disk_bytes', side_effect=samples):
+                with self.assertRaisesRegex(BudgetExceeded, 'storage measurement unavailable'):
+                    self.backend.usage(environment)
+        with patch.object(self.backend, 'inspect', side_effect=ResourceError('ownership mismatch')), \
+                patch.object(self.backend, 'disk_bytes') as sample:
+            with self.assertRaisesRegex(ResourceError, 'ownership mismatch') as raised:
+                self.backend.usage(environment)
+            self.assertNotIsInstance(raised.exception, BudgetExceeded)
+            sample.assert_not_called()
+
 
 class DockerOwnershipTests(unittest.TestCase):
     def test_postgres_init_only_socket_is_not_a_ready_dependency(self):
@@ -529,8 +544,10 @@ class DockerOwnershipTests(unittest.TestCase):
                 effect = {'side_effect': value} if isinstance(value, Exception) else {'return_value': value}
                 with patch.object(backend, 'inspect'), patch('lib.resource_docker.time.sleep'), \
                      patch.object(backend, 'call', **effect) as call:
-                    with self.assertRaisesRegex(ResourceError, 'sampling failed'):
+                    with self.assertRaisesRegex(BudgetExceeded, 'storage measurement unavailable') as raised:
                         backend.usage(env)
+                    self.assertIsInstance(raised.exception.__cause__, ResourceError)
+                    self.assertIn('sampling failed', str(raised.exception.__cause__))
                 self.assertEqual(call.call_count, 1)
 
     def test_storage_sampler_does_not_retry_or_ignore_an_ownership_conflict(self):

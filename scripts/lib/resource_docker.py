@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 
-from .resources import ResourceError, process_identity
+from .resources import BudgetExceeded, ResourceError, process_identity
 
 LABEL = 'io.harnessctl.'
 
@@ -337,9 +337,15 @@ class Docker:
         for service in ('postgres', 'redis'):
             self.inspect('container', env['name'] + '-' + service, env, service)
             path = env['config'][service].get('data_path', '/data')
-            usage[service + '_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'du', path)
-            usage['storage_bytes'] += usage[service + '_bytes']
-            usage['docker_free_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'df', path)
+            try:
+                usage[service + '_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'du', path)
+                usage['storage_bytes'] += usage[service + '_bytes']
+                usage['docker_free_bytes'] = self.disk_bytes(env['name'] + '-' + service, 'df', path)
+            except ResourceError as error:
+                # An unavailable measurement cannot identify a bad writer. Block
+                # admission while active commands retain their own lifecycle.
+                # Ownership verification above remains outside this conversion.
+                raise BudgetExceeded('project test storage measurement unavailable') from error
         usage['storage_bytes'] += usage['service_log_budget_bytes']
         return usage
 
