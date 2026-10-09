@@ -258,6 +258,7 @@ def main():
             if process.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError('DDL fixture did not start')
             time.sleep(0.05)
+        ddl_started = time.monotonic()
         overlapping = 0
         for _ in range(10):
             overlapping += not (root / (writer['id'] + '.ddl-finished')).exists()
@@ -267,6 +268,15 @@ def main():
                 raise RuntimeError('DDL sampling lost the active owner or accepted an empty measurement')
         if not overlapping:
             raise RuntimeError('sampling did not overlap actual DDL')
+        # DDL duration depends on the runner's filesystem; completion is an
+        # observed workload event, not a fixed 60-second performance promise.
+        # Keep the full workload bounded and fail if its owner exits early.
+        deadline = ddl_started + 180
+        while not (root / (writer['id'] + '.ddl-finished')).exists():
+            if process.poll() is not None or time.monotonic() >= deadline:
+                raise RuntimeError('actual DDL did not complete with its active owner within the workload budget')
+            time.sleep(0.1)
+        ddl_elapsed = time.monotonic() - ddl_started
         (root / 'release').write_text('release')
         _, error = process.communicate(timeout=60)
         if process.returncode or not (root / (writer['id'] + '.ddl-finished')).exists():
@@ -276,6 +286,7 @@ def main():
         assert_reclaimed()
         samples = [json.loads(line) for line in (fault_root / 'sampling.jsonl').read_text().splitlines()]
         observations.append({'case': 'concurrent_ddl_sampling', 'ddl_cycles': 2500,
+                             'ddl_elapsed_seconds': round(ddl_elapsed, 3),
                              'overlapping_checks': overlapping, 'du_attempts': len(samples),
                              'failed_du_attempts': sum(sample['exit_code'] != 0 for sample in samples)})
         cases.append('actual_concurrent_postgres_ddl_sampling_preserves_complete_measurements_and_owned_data')
