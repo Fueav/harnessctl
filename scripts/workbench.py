@@ -50,16 +50,21 @@ def read(path):
 
 
 @contextmanager
-def lock(path, blocking=True):
+def lock(path, blocking=True, wait_seconds=0):
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
             raise ResourceError('invalid state lock')
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
-        except BlockingIOError as error:
-            raise ResourceError('session busy; observe the active execution') from error
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+                break
+            except BlockingIOError as error:
+                if time.monotonic() >= deadline:
+                    raise ResourceError('session busy; observe the active execution') from error
+                time.sleep(.02)
         yield
     finally:
         os.close(fd)
@@ -122,14 +127,22 @@ def current_contract(state):
 def finish_interrupted(path, reason):
     for receipt_path in path.glob('executions/*/receipt.json'):
         receipt = read(receipt_path)
-        if receipt['state'] == 'running':
+        if receipt['state'] == 'running' or receipt.get('cleanup') != 'passed':
+            if receipt.get('guardian') == 'pipe-eof-v1' and receipt.get('child'):
+                deadline = time.monotonic() + 3
+                while alive(receipt['child']) and time.monotonic() < deadline:
+                    time.sleep(.05)
             stop_process_group(receipt.get('child'))
-            receipt.update(state='interrupted', exit_code=137, ended_at=time.time(), interruption=reason)
+            if receipt['state'] == 'running':
+                receipt.update(state='interrupted', exit_code=137, ended_at=time.time(), interruption=reason)
+            receipt['cleanup'] = 'passed'
             atomic_json(receipt_path, receipt)
 
 
 def recover(path):
-    with lock(path / 'owner.lock', blocking=False):
+    # Process exit can be observable before the kernel releases its final file
+    # locks. Also serialize competing recovery callers without guessing death.
+    with lock(path / 'owner.lock', blocking=False, wait_seconds=3):
         state = read(path / 'session.json')
         if state['state'] in ('closed', 'expired') and state['cleanup'] == 'passed':
             return state
@@ -284,6 +297,7 @@ def execute(path, state, request, manager, backend, bindings):
                'engine_version': VERSION, 'engine_sha256': ENGINE_DIGEST, 'descriptor_sha256': state['descriptor_sha256'], 'goal_sha256': state['goal_sha256'],
                'operation': request['operation'], 'argv': operation['argv'] + request['arguments'],
                'started_at': time.time(), 'ended_at': None, 'state': 'running', 'exit_code': None,
+               'cleanup': 'pending',
                'candidate': project.candidate(repo), 'artifacts': {name: str(directory / name) for name in ('stdout', 'stderr')}}
     atomic_json(directory / 'receipt.json', receipt)
     environment = {**os.environ, **operation.get('env', {}), **bindings, **state['extra_env'],
@@ -301,6 +315,7 @@ def execute(path, state, request, manager, backend, bindings):
         if identity is None:
             raise ResourceError('operation exited before ownership registration')
         receipt['child'] = identity
+        receipt['guardian'] = 'pipe-eof-v1'
         atomic_json(directory / 'receipt.json', receipt)
         if manager:
             manager.attach(state['resource_run'], identity)
@@ -337,13 +352,20 @@ def execute(path, state, request, manager, backend, bindings):
         os.close(read_fd)
         os.close(write_fd)
         try:
+            if child:
+                try:
+                    child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass  # An unresponsive guardian still needs owned cleanup.
             stop_process_group(receipt.get('child'))
             if child:
-                child.wait(timeout=5)
+                child.wait(timeout=3)
             if manager:
                 manager.attach(state['resource_run'], None)
+            receipt['cleanup'] = 'passed'
         except (ResourceError, OSError, subprocess.TimeoutExpired) as exception:
             error, code = str(exception), code or 1
+            receipt.update(cleanup='failed', cleanup_error=error)
             # Block subsequent commands until recovery has proved writers stopped.
             state.update(state='cleanup_pending', cleanup='failed', error=error)
             atomic_json(path / 'session.json', state)
@@ -367,14 +389,14 @@ def supervise(path):
     # This lock prevents simultaneous recovery while the owner is initializing.
     with lock(path / 'owner.lock'):
         state = read(path / 'session.json')
-        state['supervisor'] = process_identity(os.getpid())
-        atomic_json(path / 'session.json', state)
         manager, backend, bindings = None, None, {}
         def stop(number, _frame):
             atomic_json(path / 'close.json', {'reason': 'signal ' + str(number)})
         for number in (signal.SIGTERM, signal.SIGINT):
             signal.signal(number, stop)
         try:
+            state['supervisor'] = process_identity(os.getpid())
+            atomic_json(path / 'session.json', state)
             profile = state['descriptor']['profiles'][state['profile']]
             if profile['resources'] != 'none':
                 manager, backend = manager_for(state)

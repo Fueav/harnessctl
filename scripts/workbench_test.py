@@ -121,6 +121,47 @@ class WorkbenchContract(unittest.TestCase):
         observed = self.call('observe', '--session', session)
         self.assertEqual(len(observed['executions']), 2)
 
+    def test_stopped_guardian_cannot_leave_writers_after_reported_cleanup(self):
+        self.descriptor['operations']['slow']['argv'] = ['python3', '-c',
+            'import os,signal,time; os.kill(os.getppid(),signal.SIGSTOP); time.sleep(30)']
+        self.write('harness/project.json', self.descriptor)
+        session = self.open()
+        result = self.run_operation(session, 'slow', ok=False)
+        child = result['child']['pid']
+        writers = []
+        try:
+            closed = self.call('close', '--session', session)
+            self.assertEqual(closed['cleanup'], 'passed')
+            rows = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat='], capture_output=True, text=True, check=True).stdout.splitlines()
+            writers = [line for line in rows if len(line.split()) == 3 and int(line.split()[1]) == child and not line.split()[2].startswith('Z')]
+            self.assertEqual(writers, [], 'cleanup passed while owned processes still exist')
+            self.assertEqual(result['cleanup'], 'passed')
+        finally:
+            # This deliberately stopped fixture must be reclaimed even when
+            # testing an engine that incorrectly reports successful cleanup.
+            if writers:
+                try:
+                    os.killpg(child, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_unknown_orphan_group_keeps_failed_cleanup_pending(self):
+        self.descriptor['operations']['slow']['argv'] = ['python3', '-c',
+            'import os,signal,time; os.kill(os.getppid(),signal.SIGKILL); time.sleep(30)']
+        self.write('harness/project.json', self.descriptor)
+        session = self.open()
+        result = self.run_operation(session, 'slow', ok=False)
+        child = result['child']['pid']
+        try:
+            self.assertEqual(result['cleanup'], 'failed')
+            self.assertIn('orphan', result['cleanup_error'])
+            closed = self.call('close', '--session', session, ok=False)
+            self.assertEqual(closed['state'], 'cleanup_pending')
+            self.assertEqual(closed['cleanup'], 'failed')
+        finally:
+            os.killpg(child, signal.SIGKILL)  # Reconcile only this deliberately orphaned fixture.
+        self.assertEqual(self.call('close', '--session', session)['cleanup'], 'passed')
+
     def test_contract_changes_and_foreign_sessions_rejected(self):
         session = self.open()
         self.descriptor['project'] = 'altered'

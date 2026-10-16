@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -16,11 +17,21 @@ def main():
     ready_fd, result_path, command = int(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:]
     # The supervisor durably records our identity before releasing this gate.
     permission = os.read(ready_fd, 1)
-    os.close(ready_fd)
     if permission != b'1':
+        os.close(ready_fd)
         return 125
     signal.signal(signal.SIGTERM, lambda *_: None)
     signal.signal(signal.SIGINT, lambda *_: None)
+    def owner_stopped():
+        # Only the supervisor holds the write end. EOF proves its disappearance
+        # even when a later sandbox cannot signal this original process tree.
+        while os.read(ready_fd, 1):
+            pass
+        os.close(ready_fd)
+        os.killpg(os.getpgrp(), signal.SIGTERM)
+        time.sleep(.25)
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    threading.Thread(target=owner_stopped, daemon=True).start()
     try:
         process = subprocess.Popen(command)
         code = process.wait()
@@ -29,8 +40,8 @@ def main():
         print('operation executable unavailable: ' + str(error.errno), file=sys.stderr)
         code = 127
     atomic_json(result_path, {'exit_code': code})
-    # SIGKILL by the supervisor terminates this still-identifiable group,
-    # including descendants which outlive the immediate command.
+    # Keep identity stable until the supervisor closes its connection and the
+    # watcher terminates the group, including surviving command descendants.
     while True:
         time.sleep(1)
 

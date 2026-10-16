@@ -31,6 +31,7 @@ make build
 make test
 make lint
 make integration # actual local Docker PostgreSQL/Redis acceptance
+make sandbox-integration # macOS + Codex CLI required; fails if unavailable
 ```
 
-The retained resource tests cover ownership conflicts, storage measurement, recovery and safe deletion. Black-box tests use configuration-only consumers and exercise failure, timeout, expiry, supervisor death, immutable session contracts and approval semantics.
+The portable suite (`make test` and `make lint`) runs on Linux/macOS without Codex or Docker. Resource tests cover ownership, storage and safe deletion; configuration-only consumers cover execution, receipts and approval semantics. Separate Docker acceptance proves isolation and recovery. The macOS Codex sandbox suite executes cross-call sessions, cancellation, timeout and supervisor-crash cleanup under read-only defaults with only the fixture writable; it is a required local release check, not claimed by Linux CI.

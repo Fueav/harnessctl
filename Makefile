@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 VERSION ?= v1.0.0-rc.1
 
-.PHONY: build test lint integration
+.PHONY: build test lint integration sandbox-integration
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" ./cmd/harnessctl
@@ -17,3 +17,6 @@ lint:
 
 integration:
 	python3 scripts/workbench_docker_test.py
+
+sandbox-integration:
+	python3 scripts/workbench_sandbox_test.py
