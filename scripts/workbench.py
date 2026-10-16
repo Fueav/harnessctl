@@ -132,9 +132,14 @@ def recover(path):
             return state
         try:
             finish_interrupted(path, 'supervisor stopped')
-            if state.get('resource_run'):
+            if state['descriptor']['profiles'][state['profile']]['resources'] != 'none':
                 manager, _ = manager_for(state)
-                manager.release(state['resource_run'])
+                # Allocation becomes durable in the resource registry before its
+                # ID can be copied to the session. Recover that interrupted edge
+                # by recorded owner identity, including incomplete environments.
+                manager.gc()
+                if state.get('resource_run'):
+                    manager.release(state['resource_run'])
             state.update(state='closed', cleanup='passed', closed_at=time.time())
         except (ResourceError, OSError) as error:
             state.update(state='cleanup_pending', cleanup='failed', error=str(error))
