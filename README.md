@@ -11,7 +11,7 @@ harnessctl run --repo . --session SESSION_ID --operation test
 harnessctl observe --repo . --session SESSION_ID
 harnessctl close --repo . --session SESSION_ID
 harnessctl verify change --repo . --compare-ref origin/main
-harnessctl verify candidate --repo . --compare-ref origin/main --goal outcome.json
+harnessctl verify candidate --repo . --compare-ref origin/main --goal outcome.json --output .artifacts/verification
 ```
 
 The only execution descriptor is `harness/project.json`; `harness/harness.lock` pins the engine. Consumers keep their own code, product contracts and native checks, without copies of engine scripts. Operations use literal argv arrays. Generated dependency credentials are injected into operation environments and redacted from logs.
@@ -21,6 +21,8 @@ Sessions survive the initiating CLI and expire at a bounded lease. PostgreSQL da
 Private execution state defaults to `$XDG_STATE_HOME/harnessctl` or `~/.local/state/harnessctl`. Each attempt retains its own logs and receipt, including failures. Receipts bind the exact executable digest, Git candidate, descriptor and optional goal. `observe` and `close` can inspect and reclaim an owned session from another build of the same version; executing new work requires the exact build which opened it. The runtime copy is removed on successful close.
 
 State admission obeys dependency storage/free-space limits. Output is capped at 8 MiB per stream and 256 executions per session. Closed evidence is retained; admission stops with its directory and measured budget when full. This first version does not automatically archive evidence. Receipts establish local provenance, not tamper-proof attestation against the same OS user.
+
+`verify --output DIR` exports a self-contained bundle with relative references: public verification and boundary receipts, execution receipts, and redacted stdout/stderr. The directory must be new and either outside the worktree or Git-ignored. Private session/resource state and native artifacts are never copied. Failed verification attempts export too; an existing bundle is never overwritten.
 
 Verification always checks Git scope and authorization before project commands or resource allocation. Candidate and release require a clean worktree and comparison commit. Verification detects persistent candidate or contract changes during checks. An explicitly deferred candidate approval produces `pending_approval`, never `passed`; release requires approval. Outcome criteria execute through the same operation path. Independent acceptance remains outside the actor's writable checkout.
 

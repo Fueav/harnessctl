@@ -10,6 +10,7 @@ from workbench_test import WorkbenchContract
 
 PAYLOAD = r'''
 import json, os, subprocess, sys
+from pathlib import Path
 from urllib.parse import urlsplit
 connection = urlsplit(os.environ['DATABASE_DSN'])
 network = os.environ['HARNESS_RESOURCE_NETWORK']
@@ -37,6 +38,7 @@ elif mode == 'empty':
 elif mode == 'secret':
     print(os.environ['DATABASE_DSN'])
     print(os.environ['REDIS_PASSWORD'])
+    Path(os.environ['HARNESS_ARTIFACT_DIR'], 'private-native.txt').write_text(os.environ['REDIS_PASSWORD'])
 else:
     raise RuntimeError('unknown fixture mode')
 print(json.dumps({'run':os.environ['HARNESS_RESOURCE_RUN_ID'], 'environment':os.environ['HARNESS_RESOURCE_ENVIRONMENT'], 'project':os.environ['HARNESS_RESOURCE_PROJECT'], 'mode':mode}))
@@ -75,6 +77,19 @@ class DockerContract(WorkbenchContract):
         self.assertEqual(self.call('close', '--session', second)['cleanup'], 'passed')
         resource_files = list((Path(self.env['XDG_STATE_HOME']) / 'harnessctl/workbench-resources').glob('*/state.json'))
         self.assertEqual(len(resource_files), 1)
+        state = json.loads(resource_files[0].read_text())
+        self.assertEqual(state['runs'], {})
+        self.assertEqual(state['environments'], {})
+        self.descriptor['verification']['change'] = ['secret']
+        self.write('harness/project.json', self.descriptor)
+        destination = Path(self.temp.name).resolve() / 'docker-portable'
+        exported = self.call('verify', 'change', '--compare-ref', 'HEAD', '--output', str(destination))
+        self.assertEqual(exported['status'], 'passed')
+        self.assertFalse(list(destination.rglob('private-native.txt')))
+        self.assertFalse(list(destination.rglob('session.json')))
+        for file in destination.rglob('*'):
+            if file.is_file():
+                self.assertNotIn('postgres://', file.read_text())
         state = json.loads(resource_files[0].read_text())
         self.assertEqual(state['runs'], {})
         self.assertEqual(state['environments'], {})

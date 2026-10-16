@@ -7,3 +7,4 @@ unset AI_BOUNDARY_APPROVED AI_BOUNDARY_APPROVAL_EVIDENCE AI_BOUNDARY_APPROVAL_MO
 "$ROOT_DIR/scripts/collect_changes_test.sh"
 "$ROOT_DIR/scripts/check_ai_boundaries_test.sh"
 python3 "$ROOT_DIR/scripts/workbench_test.py"
+python3 "$ROOT_DIR/scripts/workbench_stream_test.py"

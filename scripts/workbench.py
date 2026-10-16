@@ -29,6 +29,12 @@ MAX_LOG_BYTES = 8 * 1024**2
 MAX_EXECUTIONS = 256
 
 
+class SessionError(ResourceError):
+    def __init__(self, message, state):
+        super().__init__(message)
+        self.details = {'session_id': state['session_id'], 'session_state': state['state'], 'cleanup': state['cleanup']}
+
+
 def private(path):
     path = Path(path)
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -207,45 +213,57 @@ def create(repo, profile_name, goal_argument, extra_env=None):
                  'created_at': now, 'expires_at': now + min(descriptor['profiles'][profile_name]['lease_seconds'], limits['max_run_seconds']),
                  'state': 'opening', 'cleanup': 'not_started', 'resource_availability': 'pending', 'extra_env': extra_env or {}}
         atomic_json(path / 'session.json', state)
-        with open(os.devnull, 'rb') as input_stream, open(os.devnull, 'ab') as output_stream:
-            process = subprocess.Popen([sys.executable, '-I', '-B', str(path / 'runtime/workbench.py'), '_supervise', str(path)],
-                                       stdin=input_stream, stdout=output_stream, stderr=output_stream, start_new_session=True,
-                                       env={**os.environ, 'HARNESSCTL_VERSION': VERSION})
-        deadline = time.monotonic() + min(180, descriptor['profiles'][profile_name]['lease_seconds'] + 10)
-        while time.monotonic() < deadline:
-            state = read(path / 'session.json')
-            if state['state'] != 'opening':
-                if state['state'] == 'ready':
-                    return path, state
-                raise ResourceError(state.get('error', 'session failed to open'))
-            if process.poll() is not None:
-                recovered = recover(path)
-                raise ResourceError(recovered.get('error', 'session supervisor exited during open'))
-            time.sleep(0.05)
-        atomic_json(path / 'close.json', {'reason': 'opening timeout'})
-        raise ResourceError('session opening timed out; cleanup requested, inspect session ' + identifier)
+        process = None
+        try:
+            with open(os.devnull, 'rb') as input_stream, open(os.devnull, 'ab') as output_stream:
+                process = subprocess.Popen([sys.executable, '-I', '-B', str(path / 'runtime/workbench.py'), '_supervise', str(path)],
+                                           stdin=input_stream, stdout=output_stream, stderr=output_stream, start_new_session=True,
+                                           env={**os.environ, 'HARNESSCTL_VERSION': VERSION})
+            deadline = time.monotonic() + min(180, descriptor['profiles'][profile_name]['lease_seconds'] + 10)
+            while time.monotonic() < deadline:
+                state = read(path / 'session.json')
+                if state['state'] != 'opening':
+                    if state['state'] == 'ready':
+                        return path, state
+                    raise ResourceError(state.get('error', 'session failed to open'))
+                if process.poll() is not None:
+                    recovered = recover(path)
+                    raise ResourceError(recovered.get('error', 'session supervisor exited during open'))
+                time.sleep(0.05)
+            atomic_json(path / 'close.json', {'reason': 'opening timeout'})
+            raise ResourceError('session opening timed out; cleanup requested, inspect session ' + identifier)
+        except BaseException as error:
+            # The ephemeral caller may be canceled before create returns its
+            # handle. Persist cleanup intent before releasing that ownership.
+            atomic_json(path / 'close.json', {'reason': 'initialization interrupted'})
+            closed = close(path) if process is not None else recover(path)
+            raise SessionError(str(error) or 'session initialization interrupted', closed) from error
 
 
 def drain(source, destination, secrets):
-    # Bounded streaming redaction carries overlap across chunk boundaries.
-    maximum = max([len(secret) for secret in secrets] + [1])
+    # Match on original byte positions. Replacing an early credential must not
+    # move the safety boundary into a later, partially received credential.
+    secrets = sorted(set(secrets), key=len, reverse=True)
     written, pending, truncated = 0, b'', False
     with destination.open('wb') as output:
         os.chmod(destination, 0o600)
         while True:
-            chunk = source.read(4096)
+            chunk = source.read1(4096)
             pending += chunk
-            if chunk:
-                boundary = max(0, len(pending) - maximum + 1)
-                # Redact before splitting, including credentials straddling reads.
-                for secret in secrets:
-                    pending = pending.replace(secret, b'[REDACTED]')
-                boundary = min(boundary, len(pending))
-                data, pending = pending[:boundary], pending[boundary:]
-            else:
-                data, pending = pending, b''
-                for secret in secrets:
-                    data = data.replace(secret, b'[REDACTED]')
+            cursor, safe = 0, bytearray()
+            while cursor < len(pending):
+                available = len(pending) - cursor
+                if chunk and any(available < len(secret) and secret.startswith(pending[cursor:]) for secret in secrets):
+                    break
+                match = next((secret for secret in secrets if pending.startswith(secret, cursor)), None)
+                if match:
+                    safe.extend(b'[REDACTED]')
+                    cursor += len(match)
+                else:
+                    safe.append(pending[cursor])
+                    cursor += 1
+            pending = pending[cursor:]
+            data = bytes(safe)
             remaining = max(0, MAX_LOG_BYTES - written)
             output.write(data[:remaining])
             written += min(remaining, len(data))
@@ -552,6 +570,60 @@ def verify(repo, args):
     return result
 
 
+def verification_with_export(repo, args):
+    destination = None
+    if args.output:
+        requested = Path(args.output)
+        requested = requested if requested.is_absolute() else repo / requested
+        if requested.is_symlink() or requested.exists() or '..' in requested.parts:
+            raise ResourceError('verification output must be a fresh non-symlink directory')
+        destination = requested.parent.resolve() / requested.name
+        if destination.is_relative_to(repo):
+            ignored = subprocess.run(['git', '-C', str(repo), 'check-ignore', '--quiet', str(destination)], capture_output=True)
+            if ignored.returncode != 0:
+                raise ResourceError('verification output inside the worktree must be Git-ignored; use an ignored directory or an external path')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.mkdir(mode=0o700)
+        except FileExistsError as error:
+            raise ResourceError('verification output already exists; choose a new directory') from error
+    try:
+        result = verify(repo, args)
+    except (ResourceError, OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+        result = {'schema_version': 1, 'status': 'failed', 'error': str(error), 'engine_version': VERSION,
+                  'engine_sha256': ENGINE_DIGEST, 'engineering_status': 'not_started', 'cleanup': 'not_started',
+                  **getattr(error, 'details', {})}
+    if destination is None:
+        return result
+    portable = json.loads(json.dumps(result))
+    portable['receipt'] = 'verification.json'
+    if 'boundaries' in portable:
+        boundary = read(Path(portable['boundaries']))
+        atomic_json(destination / 'boundaries.json', boundary)
+        portable['boundaries'] = 'boundaries.json'
+    for receipt in portable.get('executions', []):
+        execution_root = private(destination / 'executions' / receipt['execution_id'])
+        relative_root = Path('executions') / receipt['execution_id']
+        for name in ('stdout', 'stderr'):
+            # Only these two already-redacted engine outputs are public. Native
+            # artifacts may contain secrets and require their own export policy.
+            source = Path(receipt['artifacts'][name])
+            info = source.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_LOG_BYTES + 128:
+                raise ResourceError('public execution output is not a bounded regular log')
+            raw = source.read_bytes()
+            with (execution_root / name).open('xb') as output:
+                os.chmod(execution_root / name, 0o600)
+                output.write(raw)
+            receipt['artifacts'][name] = str(relative_root / name)
+        stored = json.loads(json.dumps(receipt))
+        stored['artifacts'] = {'stdout': 'stdout', 'stderr': 'stderr'}
+        atomic_json(execution_root / 'receipt.json', stored)
+    # Written last: a partial copy is never mistaken for a completed bundle.
+    atomic_json(destination / 'verification.json', portable)
+    return {**portable, 'receipt': str(destination / 'verification.json'), 'bundle': str(destination)}
+
+
 def install(repo, dry_run):
     descriptor, digest = project.load(repo)
     selected = descriptor['tools']
@@ -619,6 +691,7 @@ def main():
     verification.add_argument('--profile', default='development')
     verification.add_argument('--goal')
     verification.add_argument('--compare-ref')
+    verification.add_argument('--output')
     installation = commands.add_parser('install-tools')
     installation.add_argument('--dry-run', action='store_true')
     def cancelled(number, _frame):
@@ -638,7 +711,7 @@ def main():
             _, state = create(repo, args.profile, args.goal)
             result = public_session(state)
         elif args.command == 'verify':
-            result = verify(repo, args)
+            result = verification_with_export(repo, args)
         elif args.command == 'install-tools':
             result = install(repo, args.dry_run)
         else:
@@ -661,7 +734,7 @@ def main():
             return 0 if result['cleanup'] == 'passed' else 1
         return 0
     except (ResourceError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
-        print(json.dumps({'schema_version': 1, 'error': str(error)}))
+        print(json.dumps({'schema_version': 1, 'error': str(error), **getattr(error, 'details', {})}))
         return 2
 
 

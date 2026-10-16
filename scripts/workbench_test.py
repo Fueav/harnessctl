@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import signal
+import shutil
 import tempfile
 import time
 import unittest
@@ -245,6 +246,78 @@ class WorkbenchContract(unittest.TestCase):
         result = self.run_operation(session, 'test')
         self.assertEqual(result['state'], 'completed')
         self.assertFalse((self.repo / 'scripts').exists())
+
+
+    def test_portable_verification_survives_private_state_removal(self):
+        destination = Path(self.temp.name).resolve() / 'portable'
+        result = self.call('verify', 'change', '--compare-ref', 'HEAD', '--output', str(destination))
+        self.assertEqual(result['status'], 'passed')
+        shutil.rmtree(Path(self.env['XDG_STATE_HOME']))
+        document = json.loads((destination / 'verification.json').read_text())
+        self.assertEqual(document['receipt'], 'verification.json')
+        self.assertTrue((destination / document['boundaries']).is_file())
+        for receipt in document['executions']:
+            for reference in receipt['artifacts'].values():
+                self.assertFalse(Path(reference).is_absolute())
+                self.assertTrue((destination / reference).is_file())
+            stored = json.loads((destination / 'executions' / receipt['execution_id'] / 'receipt.json').read_text())
+            self.assertEqual(stored['artifacts']['stdout'], 'stdout')
+        self.assertFalse(any(path.name in ('session.json', 'state.json', 'runtime') for path in destination.rglob('*')))
+
+    def test_failed_verification_exports_and_never_overwrites(self):
+        self.descriptor['verification']['change'] = ['fail']
+        self.write('harness/project.json', self.descriptor)
+        destination = Path(self.temp.name).resolve() / 'portable-failed'
+        result = self.call('verify', 'change', '--compare-ref', 'HEAD', '--output', str(destination), ok=False)
+        self.assertEqual(result['status'], 'failed')
+        content = (destination / 'verification.json').read_bytes()
+        document = json.loads(content)
+        self.assertIn('semantic failure', (destination / document['executions'][0]['artifacts']['stdout']).read_text())
+        self.assertIn('error', self.call('verify', 'change', '--compare-ref', 'HEAD', '--output', str(destination), ok=False))
+        self.assertEqual((destination / 'verification.json').read_bytes(), content)
+        link = destination.parent / 'redirect'
+        link.symlink_to(destination, target_is_directory=True)
+        self.assertIn('error', self.call('verify', 'change', '--compare-ref', 'HEAD', '--output', str(link), ok=False))
+
+
+    def test_cancellation_during_session_initialization_reclaims_owner(self):
+        fake_bin = Path(self.temp.name) / 'fake-bin'
+        fake_bin.mkdir()
+        docker = fake_bin / 'docker'
+        docker.write_text('#!/bin/sh\nif [ "$1" = context ]; then echo unix:///fixture.sock; else sleep 2; exit 1; fi\n')
+        docker.chmod(0o700)
+        self.env['PATH'] = str(fake_bin) + os.pathsep + self.env['PATH']
+        self.env.pop('DOCKER_HOST', None)
+        self.descriptor['profiles']['development'] = {'resources': 'shared', 'lease_seconds': 20}
+        self.descriptor['dependencies'] = {'enabled': True}
+        self.write('harness/project.json', self.descriptor)
+        process = subprocess.Popen([self.binary, 'verify', 'change', '--repo', str(self.repo), '--compare-ref', 'HEAD'], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            state_path = None
+            while time.monotonic() < deadline:
+                for path in Path(self.env['XDG_STATE_HOME']).glob('harnessctl/workbench/*/*/session.json'):
+                    state = json.loads(path.read_text())
+                    if state.get('supervisor'):
+                        state_path = path
+                        break
+                if state_path:
+                    break
+                time.sleep(0.02)
+            self.assertIsNotNone(state_path, 'supervisor never registered')
+            process.send_signal(signal.SIGTERM)
+            out, err = process.communicate(timeout=15)
+            result = json.loads(out)
+            self.assertNotEqual(process.returncode, 0, err)
+            self.assertEqual(result['cleanup'], 'passed')
+            self.assertEqual(result['session_state'], 'closed')
+            self.assertTrue((state_path.parent / 'close.json').exists())
+            self.assertFalse((state_path.parent / 'runtime').exists())
+            self.assertEqual(json.loads(state_path.read_text())['state'], 'closed')
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
 
 
     def test_old_public_paths_are_removed(self):
