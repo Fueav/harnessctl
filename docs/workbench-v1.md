@@ -28,7 +28,7 @@ Operations are named argv arrays, never implicit shell interpolation. An optiona
 
 ## Interface
 
-All responses are one JSON object with `schema_version: 1`; process stdout belongs in referenced execution logs, not mixed into protocol stdout. Errors have an actionable `error` and nonzero exit. `--repo` selects a Git worktree and exact lock; session IDs never grant access to another worktree.
+All responses are one JSON object with `schema_version: 1`; process stdout belongs in referenced execution logs, not mixed into protocol stdout. Errors have an actionable `error` and nonzero exit. `--repo` selects a Git worktree and exact lock; session IDs never grant access to another worktree. Execution requires the exact engine binary digest. A later build of the same schema/version may observe or close an already owned session for recovery, but may not execute through it.
 
 | Command | Result |
 | --- | --- |
@@ -45,9 +45,11 @@ Default verification profile is `development`. Explicit sessions survive the ini
 
 An optional goal is a regular JSON file with `schema_version`, `id`, `objective`, and nonempty `criteria`: each has `id`, `description`, and `operation`. An optional `scope` string states the result boundary (for example local API, staging or production). Goal criteria reference project operations. A session freezes goal content and digest; changed goal/descriptor inputs cannot silently alter an existing session. Outcome verification runs each required criterion as well as the engineering profile, without duplicate execution of the same operation.
 
-Each execution receipt binds session/execution ID, exact engine version, project descriptor and goal digests, operation/argv, start/end, actual exit or interruption, candidate Git HEAD plus working-state digest, and output artifacts. Receipts are per execution; there is no mutable global last-result. A failed or interrupted attempt remains visible. Logs redact generated dependency credentials. Receipt directories are private, outside the checkout, and writes are atomic. Receipts are factual provenance, not cryptographic attestation against the same OS user.
+Each execution receipt binds session/execution ID, exact engine version, project descriptor and goal digests, operation/argv, start/end, actual exit or interruption, candidate Git HEAD plus working-state digest, and output artifacts. Receipts are per execution; there is no mutable global last-result. A failed or interrupted attempt remains visible. Logs redact generated dependency credentials. Receipt directories are private, outside the checkout, and writes are atomic. Receipts are factual provenance, not cryptographic attestation against the same OS user. Closed sessions discard their extracted runtime and retain evidence. Storage admission uses project limits and reports the owned evidence location when capacity is exhausted; v1 does not silently delete retained evidence.
 
 Verification binds its initial candidate and contracts and fails if they change during checks. Candidate/release require a clean checkout and a resolvable compare commit. `change` may verify dirty work but must fingerprint it. A passed result means only that the named checks passed for the bound scope; it is never automatic proof of product success, deployment or independent acceptance. Independent evaluators execute their own frozen acceptance after the actor's candidate is sealed, outside its writable scope. They own the delivery judgment.
+
+Candidate CI may explicitly defer boundary approval. Successful checks then return `status: pending_approval`, `engineering_status: passed`, and `approval_status: pending` with exit 0; this is not a promotable verification result. Release always requires actual authorization. Repository branch protection owns review approval. The obsolete evidence-format-dependent `approval finalize` interface is removed. Native operations receive `HARNESS_PROJECT_ROOT`, `HARNESS_COMPARE_SHA`, `VERIFY_COMPARE_REF` and `HARNESS_ARTIFACT_DIR`, without engine implementation paths.
 
 ## Replacement and acceptance
 

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import signal
 import tempfile
 import time
 import unittest
@@ -152,6 +153,89 @@ class WorkbenchContract(unittest.TestCase):
         (self.repo / 'secrets/key').write_text('fixture-only')
         result = self.call('verify', 'change', '--compare-ref', 'HEAD', ok=False)
         self.assertIn('error', result)
+
+    def test_malformed_nested_contracts_never_emit_tracebacks(self):
+        for value in ([], {}, True, None, 1):
+            self.descriptor['operations']['test']['argv'] = value
+            self.write('harness/project.json', self.descriptor)
+            self.assertIn('error', self.call('describe', ok=False))
+        self.descriptor['operations']['test']['argv'] = ['python3', 'app.py']
+        self.write('harness/project.json', self.descriptor)
+        self.write('goal.json', {'schema_version': 1, 'id': 'bad', 'objective': 'bad goal', 'criteria': [{'id': 'a', 'description': 'bad reference', 'operation': []}]})
+        self.assertIn('error', self.call('open', '--goal', 'goal.json', ok=False))
+
+    def test_expiry_and_close_reclaim_runtime_but_keep_receipts(self):
+        self.descriptor['profiles']['development']['lease_seconds'] = 2
+        self.write('harness/project.json', self.descriptor)
+        session = self.open()
+        time.sleep(2.5)
+        result = self.call('observe', '--session', session)
+        self.assertEqual(result['state'], 'expired')
+        self.assertEqual(result['cleanup'], 'passed')
+        paths = list((Path(self.env['XDG_STATE_HOME']) / 'harnessctl/workbench').glob('*/' + session))
+        self.assertEqual(len(paths), 1)
+        self.assertFalse((paths[0] / 'runtime').exists())
+
+    def test_supervisor_crash_recovers_registered_child(self):
+        self.descriptor['operations']['slow']['timeout_seconds'] = 30
+        self.write('harness/project.json', self.descriptor)
+        session = self.open()
+        process = subprocess.Popen([self.binary, 'run', '--repo', str(self.repo), '--session', session, '--operation', 'slow'], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                observation = self.call('observe', '--session', session)
+                executions = observation['executions']
+                if executions and executions[0].get('child'):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail('operation child was not durably registered')
+            os.kill(observation['supervisor']['pid'], signal.SIGKILL)
+            out, err = process.communicate(timeout=15)
+            result = json.loads(out)
+            self.assertEqual(result['state'], 'interrupted', err)
+            observed = self.call('observe', '--session', session)
+            self.assertEqual(observed['cleanup'], 'passed')
+            self.assertEqual(observed['state'], 'closed')
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    def test_deferred_candidate_never_claims_full_verification(self):
+        (self.repo / '.ai-boundaries.yml').write_text((self.repo / '.ai-boundaries.yml').read_text() + '\n')
+        self.git('add', '.')
+        self.git('commit', '-m', 'protected contract change')
+        self.env['AI_BOUNDARY_APPROVAL_MODE'] = 'deferred'
+        result = self.call('verify', 'candidate', '--compare-ref', 'HEAD^')
+        self.assertEqual(result['status'], 'pending_approval')
+        self.assertEqual(result['engineering_status'], 'passed')
+        self.assertEqual(result['approval_status'], 'pending')
+        self.assertEqual(self.call('verify', 'release', '--compare-ref', 'HEAD^', ok=False)['status'], 'failed')
+
+    def test_same_version_other_build_cannot_execute_session(self):
+        session = self.open()
+        other = str(Path(self.temp.name) / 'other-build')
+        subprocess.run(['go', 'build', '-trimpath', '-ldflags', '-X main.version=v1.0.0-rc.1', '-o', other, './cmd/harnessctl'], cwd=ROOT, check=True)
+        result = subprocess.run([other, 'run', '--repo', str(self.repo), '--session', session, '--operation', 'test'], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('error', json.loads(result.stdout))
+        closed = subprocess.run([other, 'close', '--repo', str(self.repo), '--session', session], env=self.env, capture_output=True, text=True)
+        self.assertEqual(json.loads(closed.stdout)['cleanup'], 'passed')
+
+
+    def test_configuration_only_go_consumer(self):
+        (self.repo / 'go.mod').write_text('module example.test/consumer\n\ngo 1.22\n')
+        (self.repo / 'result.go').write_text('package result\nfunc Complete(items []bool) bool { for _, done := range items { if !done { return false } }; return len(items)>0 }\n')
+        (self.repo / 'result_test.go').write_text('package result\nimport "testing"\nfunc TestComplete(t *testing.T) { if Complete(nil) || Complete([]bool{true,false}) || !Complete([]bool{true,true}) { t.Fatal("incomplete result reported complete") } }\n')
+        self.descriptor['operations']['test']['argv'] = ['go', 'test', './...']
+        self.write('harness/project.json', self.descriptor)
+        session = self.open()
+        result = self.run_operation(session, 'test')
+        self.assertEqual(result['state'], 'completed')
+        self.assertFalse((self.repo / 'scripts').exists())
+
 
     def test_old_public_paths_are_removed(self):
         for command in [('resources', 'status'), ('scaffold', 'audit'), ('evidence', 'verify'), ('workspace-preflight',)]:
