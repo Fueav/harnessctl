@@ -148,6 +148,16 @@ class WorkbenchContract(unittest.TestCase):
         self.assertIn('candidate', result['error'])
         self.assertEqual(result['cleanup'], 'passed')
 
+    def test_later_operation_cannot_restore_mutated_candidate_into_a_pass(self):
+        self.descriptor['operations']['restore'] = {'argv': ['python3', '-c', 'from pathlib import Path; Path("app.py").write_text(\'print("working")\\n\')'], 'timeout_seconds': 10}
+        self.descriptor['verification']['change'] = ['mutate', 'restore']
+        self.write('harness/project.json', self.descriptor)
+        result = self.call('verify', 'change', '--compare-ref', 'HEAD', ok=False)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(len(result['executions']), 1)
+        self.assertIn('candidate', result['error'])
+
+
     def test_boundaries_cannot_be_omitted_by_descriptor(self):
         (self.repo / 'secrets').mkdir()
         (self.repo / 'secrets/key').write_text('fixture-only')

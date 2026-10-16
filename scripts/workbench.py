@@ -519,6 +519,9 @@ def verify(repo, args):
         for operation in operations:
             receipts[operation] = run(path, operation, [])
             result['executions'].append(receipts[operation])
+            if receipts[operation]['candidate'] != initial or receipts[operation].get('candidate_after') != initial:
+                raise ResourceError('candidate changed during operation ' + operation)
+            current_contract(state)
         for criterion in criteria:
             receipt = receipts[criterion['operation']]
             result['criteria'].append({'id': criterion['id'], 'description': criterion['description'],
