@@ -6,7 +6,9 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 HISTORICAL = "a9f383444612a1606cec53fd54f7e6a2df59c2d4"
-RETIREMENT_DOCUMENTS = {"AGENTS.md", "README.md", ".github/workflows/ci.yml"}
+RETIREMENT_DOCUMENTS = {"AGENTS.md", "README.md"}
+REMOVED = {".github/workflows/ci.yml"}
+ADDED = {".github/check_retirement.py", ".github/workflows/retirement.yml"}
 
 
 def main():
@@ -19,12 +21,20 @@ def main():
     tree = subprocess.check_output(
         ["git", "ls-tree", "-r", "-z", HISTORICAL], cwd=ROOT
     )
+    entries = [entry.split(b"\t", 1) for entry in tree.rstrip(b"\0").split(b"\0")]
+    expected_paths = {path.decode() for _, path in entries} - REMOVED | ADDED
+    tracked = subprocess.check_output(["git", "ls-files", "-z"], cwd=ROOT)
+    current_paths = {path.decode() for path in tracked.rstrip(b"\0").split(b"\0")}
+    if current_paths != expected_paths:
+        raise SystemExit(
+            f"Frozen tree changed: added={sorted(current_paths - expected_paths)}, "
+            f"missing={sorted(expected_paths - current_paths)}"
+        )
     preserved = 0
-    for entry in tree.rstrip(b"\0").split(b"\0"):
-        metadata, raw_path = entry.split(b"\t", 1)
+    for metadata, raw_path in entries:
         mode, kind, blob = metadata.split()
         name = raw_path.decode()
-        if name in RETIREMENT_DOCUMENTS:
+        if name in RETIREMENT_DOCUMENTS | REMOVED:
             continue
         path = ROOT / name
         expected = subprocess.check_output(["git", "cat-file", "blob", blob.decode()], cwd=ROOT)
