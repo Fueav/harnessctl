@@ -1,20 +1,7 @@
-# HARNESSCTL CONTRACT
+# HISTORICAL ENGINE CONTRACT
 
-This repository owns the versioned Harness execution engine. Consumer repositories own configuration and project contracts; they must not vendor this engine.
+This repository preserves the retired Harness engine and workbench. Native project delivery must not depend on it or copy its execution machinery.
 
-## Commands
+Preserve historical implementation, tests and evidence. Change historical behavior only for an explicitly requested investigation; do not add a replacement engine, forwarding commands or compatibility entrypoints. Current scaffold delivery belongs to the canonical template and Template Sync, while startup and independent acceptance belong to each product.
 
-```bash
-make build
-make test
-make lint
-```
-
-## Boundaries
-
-- Keep the CLI fail-closed for unknown commands, invalid configuration, unresolved Git identities, and unclassified paths.
-- Preserve deterministic change-scope, evidence, and approval semantics across releases.
-- Add behavior through tests first. Consumer compatibility needs an integration fixture that contains configuration but no engine source.
-- Release tags use semantic versions. Breaking configuration or evidence changes require a schema-version change and migration notes.
-- Never add credentials, organization-specific hosts, or consumer application policy to the engine.
-- `scripts/` contains centralized engine implementation and engine tests. Consumer repositories receive only configuration, a version lock, and thin wrappers.
+An explicit historical audit may use the existing Makefile and original frozen inputs. Such results do not validate the new native delivery path. Protect unrelated work and credentials; use Conventional Commits.

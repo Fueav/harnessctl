@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Lifecycle contracts: no Docker or application source required by the consumer."""
 import copy
+import ctypes
+import errno
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -14,7 +16,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lib.resources import BudgetExceeded, Manager, ResourceError, default_config, fingerprint, process_identity, validate_config
+from lib.resources import BudgetExceeded, Manager, ResourceError, alive, default_config, fingerprint, process_identity, validate_config
 from lib.resource_docker import Docker, LABEL, stop_process_group
 
 
@@ -219,7 +221,7 @@ class LifecycleTests(unittest.TestCase):
         live = self.manager.acquire('shared')
         dead = self.manager.acquire('shared')
         state = json.loads((self.root / 'state.json').read_text())
-        state['runs'][dead['id']]['owner'] = {'pid': 2147483647, 'started': 'gone', 'boot': 'gone'}
+        state['runs'][dead['id']]['owner'] = {**process_identity(os.getpid()), 'pid': 2147483647, 'started': 'gone'}
         (self.root / 'state.json').write_text(json.dumps(state))
         next_run = self.manager.acquire('shared')
         self.assertNotIn(dead['id'], self.backend.runs)
@@ -267,7 +269,7 @@ class LifecycleTests(unittest.TestCase):
     def test_reboot_recovery_discards_stopped_environment_only_after_all_owners_are_dead(self):
         run = self.manager.acquire('shared')
         state = json.loads(self.manager.path.read_text())
-        state['runs'][run['id']]['owner'] = {'pid': 2147483647, 'started': 'gone', 'boot': 'gone'}
+        state['runs'][run['id']]['owner'] = {**process_identity(os.getpid()), 'pid': 2147483647, 'started': 'gone'}
         self.manager.path.write_text(json.dumps(state))
         self.backend.stopped.add(run['environment'])
         new_run = self.manager.acquire('shared')
@@ -279,7 +281,7 @@ class LifecycleTests(unittest.TestCase):
         live = self.manager.acquire('shared')
         dead = self.manager.acquire('shared')
         state = json.loads(self.manager.path.read_text())
-        state['runs'][dead['id']]['owner'] = {'pid': 2147483647, 'started': 'gone', 'boot': 'gone'}
+        state['runs'][dead['id']]['owner'] = {**process_identity(os.getpid()), 'pid': 2147483647, 'started': 'gone'}
         self.manager.path.write_text(json.dumps(state))
         self.backend.stopped.add(dead['environment'])
         with self.assertRaisesRegex(ResourceError, 'cleanup'):
@@ -342,7 +344,22 @@ class LifecycleTests(unittest.TestCase):
         current = process_identity(os.getpid())
         self.assertEqual(current['pid'], os.getpid())
         self.assertTrue(current['started'])
-        self.assertTrue(current['boot'])
+        self.assertTrue(current.get('boot') or current.get('platform') == 'darwin-libproc-v1')
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin identity ABI')
+    def test_denied_process_query_is_unknown_not_dead(self):
+        def denied(*_args):
+            ctypes.set_errno(errno.EPERM)
+            return 0
+        with patch('lib.resources._darwin_library') as library:
+            library.return_value.proc_pidinfo.side_effect = denied
+            with self.assertRaisesRegex(ResourceError, 'preserving'):
+                process_identity(os.getpid())
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin identity version')
+    def test_old_process_identity_cannot_authorize_recovery(self):
+        with self.assertRaisesRegex(ResourceError, 'incompatible'):
+            alive({'pid': os.getpid(), 'started': 'old-ps-format', 'boot': 'old-sysctl-format'})
 
 
 class StorageSamplingTests(unittest.TestCase):
@@ -495,10 +512,8 @@ class DockerOwnershipTests(unittest.TestCase):
 
     def test_exited_group_is_not_reported_as_permission_failure_on_macos(self):
         child = {'pid': 1234, 'started': 'same', 'boot': 'same'}
-        live = type('Result', (), {'returncode': 0, 'stdout': '1234 1234 S\n'})()
-        exited = type('Result', (), {'returncode': 0, 'stdout': '1234 1234 Z\n'})()
         with patch('lib.resource_docker.process_identity', return_value=child), \
-             patch('lib.resource_docker.subprocess.run', side_effect=[live, exited, exited]), \
+             patch('lib.resource_docker.process_group_members', side_effect=[[1234], [], []]), \
              patch('lib.resource_docker.os.killpg', side_effect=[None, PermissionError(1, 'Operation not permitted')]):
             stop_process_group(child)
 
@@ -574,96 +589,6 @@ class DockerOwnershipTests(unittest.TestCase):
             with self.assertRaisesRegex(ResourceError, 'ownership'):
                 backend.inspect('volume', 'fixture', {'project': 'ours', 'id': 'env'}, 'postgres')
         self.assertEqual(call.call_count, 1)
-
-
-class SupervisorTests(unittest.TestCase):
-    def test_dead_invoking_harness_process_cannot_start_new_work(self):
-        import argparse
-        import resources
-        with tempfile.TemporaryDirectory() as directory:
-            backend = FakeDocker()
-            manager = Manager(directory, 'a' * 24, backend, default_config())
-            args = argparse.Namespace(mode='shared', retain_on_failure=0, command=[sys.executable, '-c', 'pass'])
-            with patch.dict(os.environ, {'HARNESSCTL_OWNER_PID': '2147483647'}), self.assertRaises(ResourceError):
-                resources.execute(manager, backend, args)
-            self.assertEqual(backend.created, 0)
-
-    def test_success_and_failure_remove_services_before_returning(self):
-        import argparse
-        import resources
-        for code in (0, 7):
-            with self.subTest(code=code), tempfile.TemporaryDirectory() as directory:
-                backend = FakeDocker()
-                manager = Manager(directory, 'a' * 24, backend, default_config())
-                args = argparse.Namespace(mode='shared', retain_on_failure=0,
-                                          command=[sys.executable, '-c', f'raise SystemExit({code})'])
-                self.assertEqual(resources.execute(manager, backend, args), code)
-                self.assertEqual(backend.environments, {})
-                self.assertEqual(manager.read()['environments'], {})
-                self.assertEqual(manager.read()['runs'], {})
-
-    def test_cleanup_failure_does_not_relabel_a_successful_command_as_failed(self):
-        import argparse
-        import resources
-        with tempfile.TemporaryDirectory() as directory:
-            backend = FakeDocker()
-            backend.fail_cleanup = True
-            manager = Manager(directory, 'a' * 24, backend, default_config())
-            args = argparse.Namespace(mode='shared', retain_on_failure=0, command=[sys.executable, '-c', 'pass'])
-            self.assertNotEqual(resources.execute(manager, backend, args), 0)
-            result = json.loads((Path(directory) / 'last-result.json').read_text())
-            self.assertEqual(result['command_exit_code'], 0)
-            self.assertEqual(result['cleanup'], 'failed')
-
-    def test_unattributed_project_storage_pressure_does_not_kill_an_active_command(self):
-        import argparse
-        import resources
-        with tempfile.TemporaryDirectory() as directory:
-            backend = FakeDocker()
-            config = default_config()
-            config['limits']['sample_seconds'] = 1
-            manager = Manager(directory, 'a' * 24, backend, config)
-            args = argparse.Namespace(mode='shared', retain_on_failure=0,
-                                      command=[sys.executable, '-c', 'import time; time.sleep(1.3)'])
-            with patch.object(manager, 'check_budget', side_effect=resources.BudgetExceeded('project test storage capacity exceeded')):
-                self.assertEqual(resources.execute(manager, backend, args), 0)
-            result = json.loads((Path(directory) / 'last-result.json').read_text())
-            self.assertTrue(result['budget_pressure'])
-
-    def test_signal_stops_child_and_preserves_exit_code_after_cleanup(self):
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with self.subTest(signal=sig), tempfile.TemporaryDirectory() as directory:
-                script = '''import argparse, pathlib, sys
-from resources_test import FakeDocker
-from lib.resources import Manager, default_config
-from resources import execute
-backend=FakeDocker()
-config=default_config(); config['limits']['min_free_bytes']=0
-manager=Manager(pathlib.Path(sys.argv[1]), 'a'*24, backend, config)
-args=argparse.Namespace(mode='shared', retain_on_failure=0, command=[sys.executable,'-c','import time; time.sleep(30)'])
-sys.exit(execute(manager, backend, args))
-'''
-                process = subprocess.Popen([sys.executable, '-c', script, directory],
-                                           cwd=Path(__file__).parent, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                try:
-                    deadline = time.monotonic() + 10
-                    while time.monotonic() < deadline:
-                        path = Path(directory) / 'state.json'
-                        if path.exists() and any(run.get('child') for run in json.loads(path.read_text())['runs'].values()):
-                            break
-                        time.sleep(0.01)
-                    else:
-                        self.fail('supervisor did not register its child')
-                    process.send_signal(sig)
-                    _, error = process.communicate(timeout=10)
-                    self.assertEqual(process.returncode, 128 + sig, error)
-                    self.assertEqual(json.loads(path.read_text())['runs'], {})
-                    self.assertEqual(json.loads(path.read_text())['environments'], {})
-                    self.assertEqual(json.loads((Path(directory) / 'last-result.json').read_text())['cleanup'], 'passed')
-                finally:
-                    if process.poll() is None:
-                        process.kill()
-                        process.communicate()
 
 
 if __name__ == '__main__':

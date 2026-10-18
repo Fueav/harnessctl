@@ -7,7 +7,7 @@ import signal
 import subprocess
 import time
 
-from .resources import BudgetExceeded, ResourceError, process_identity
+from .resources import BudgetExceeded, ResourceError, process_group_members, process_identity
 
 LABEL = 'io.harnessctl.'
 
@@ -44,17 +44,16 @@ def stop_process_group(child):
     if not child:
         return
     # A process group cannot survive a host reboot, even if its PID is reused.
-    if child['boot'] != process_identity(os.getpid())['boot']:
+    host = process_identity(os.getpid())
+    if child.get('boot') and host.get('boot') and child['boot'] != host['boot']:
         return
+    if child.get('platform') != host.get('platform'):
+        raise ResourceError('incompatible process identity; refusing workload cleanup')
     current = process_identity(child['pid'])
     if current is not None and current != child:
         raise ResourceError('workload PID was reused; refusing to signal it')
     def members():
-        group = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat='], text=True, capture_output=True)
-        if group.returncode:
-            raise ResourceError('cannot inspect workload process group')
-        rows = [line.split() for line in group.stdout.splitlines() if len(line.split()) == 3]
-        return [int(item[0]) for item in rows if int(item[1]) == child['pid'] and not item[2].startswith('Z')]
+        return process_group_members(child['pid'])
     if not members():
         return
     # A live original leader proves the group. An orphan group cannot be claimed by

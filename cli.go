@@ -1,7 +1,10 @@
 package harnessctl
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -31,82 +34,31 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
-	case "resources":
-		if len(args) < 2 || (args[1] != "run" && args[1] != "status" && args[1] != "gc") {
-			return cliError(stderr, "resources requires run, status, or gc")
-		}
-		return runEngine("resources.py", args[1:], stdout, stderr)
 	case "version":
 		if len(args) != 1 {
-			return cliError(stderr, "version accepts no arguments")
+			return cliError(stdout, "version accepts no arguments")
 		}
 		fmt.Fprintf(stdout, "harnessctl %s\n", Version)
 		return 0
-	case "scaffold":
-		if len(args) < 2 {
-			return cliError(stderr, "scaffold requires audit or record")
-		}
-		switch args[1] {
-		case "audit":
-			return runScaffoldAudit(args[2:], stdout, stderr)
-		case "record":
-			return runScaffoldRecord(args[2:], stdout, stderr)
-		default:
-			return cliError(stderr, "scaffold requires audit or record")
-		}
-	case "evidence", "approval", "collect":
-		contract := map[string][2]string{
-			"evidence": {"verify", "verify_evidence.py"},
-			"approval": {"finalize", "finalize_approval.py"},
-			"collect":  {"changes", "collect_changes.py"},
-		}[args[0]]
-		if len(args) < 2 || args[1] != contract[0] {
-			return cliError(stderr, "%s requires %s", args[0], contract[0])
-		}
-		return runEngine(contract[1], args[2:], stdout, stderr)
+	case "describe", "open", "run", "observe", "close", "verify", "install-tools":
+		return runEngine("workbench.py", args, stdout, stderr)
 	case "check":
-		if len(args) < 2 {
-			return cliError(stderr, "check requires boundaries or spec-registry")
+		if len(args) < 2 || args[1] != "boundaries" {
+			return cliError(stdout, "check requires boundaries")
 		}
-		script := map[string]string{
-			"boundaries":    "check_ai_boundaries.sh",
-			"spec-registry": "check_spec_registry.sh",
-		}[args[1]]
-		if script == "" {
-			return cliError(stderr, "unknown check %q", args[1])
+		return runEngine("workbench.py", args, stdout, stderr)
+	case "collect":
+		if len(args) < 2 || args[1] != "changes" {
+			return cliError(stdout, "collect requires changes")
 		}
-		return runEngine(script, args[2:], stdout, stderr)
-	case "verify":
-		if len(args) < 2 {
-			return cliError(stderr, "verify requires change, candidate, or release")
-		}
-		script := map[string]string{
-			"change":    "verify_change.sh",
-			"candidate": "verify_candidate.sh",
-			"release":   "verify_release.sh",
-		}[args[1]]
-		if script == "" {
-			return cliError(stderr, "unknown verification profile %q", args[1])
-		}
-		return runEngine(script, args[2:], stdout, stderr)
-	case "install-tools":
-		return runEngine("install_tools.sh", args[1:], stdout, stderr)
-	case "workspace-preflight":
-		_, forwarded, err := projectRoot(args[1:])
-		if err != nil {
-			return cliError(stderr, "%v", err)
-		}
-		if len(forwarded) != 0 {
-			return cliError(stderr, "workspace-preflight received unexpected arguments")
-		}
-		return runEngine("workspace_preflight.sh", args[1:], stdout, stderr)
+		return runEngine("workbench.py", args, stdout, stderr)
 	default:
-		return cliError(stderr, "unknown command %q", args[0])
+		return cliError(stdout, "unknown command %q", args[0])
 	}
 }
 
 func cliError(stderr io.Writer, format string, values ...any) int {
-	fmt.Fprintf(stderr, "harnessctl: "+format+"\n", values...)
+	_ = json.NewEncoder(stderr).Encode(map[string]any{"schema_version": 1, "error": fmt.Sprintf(format, values...)})
 	return 2
 }
 
@@ -115,57 +67,59 @@ func usageText() string {
 
 commands:
   version
-  check boundaries|spec-registry
+  describe | open | run | observe | close
   verify change|candidate|release
-  evidence verify
-  scaffold audit|record
-  approval finalize
+  check boundaries
   collect changes
   install-tools
-  workspace-preflight
-  resources run|status|gc
 `
+
 }
 
 func runEngine(script string, arguments []string, stdout, stderr io.Writer) int {
 	repo, forwarded, err := projectRoot(arguments)
 	if err != nil {
-		return cliError(stderr, "%v", err)
+		return cliError(stdout, "%v", err)
 	}
 	if err := verifyProjectLock(repo); err != nil {
-		return cliError(stderr, "%v", err)
+		return cliError(stdout, "%v", err)
 	}
 	runtimeRoot, err := os.MkdirTemp("", "harnessctl-engine-")
 	if err != nil {
-		return cliError(stderr, "create engine runtime: %v", err)
+		return cliError(stdout, "create engine runtime: %v", err)
 	}
 	defer os.RemoveAll(runtimeRoot)
 	if err := extractEngine(runtimeRoot); err != nil {
-		return cliError(stderr, "extract engine runtime: %v", err)
+		return cliError(stdout, "extract engine runtime: %v", err)
 	}
 
 	command := exec.Command(filepath.Join(runtimeRoot, "scripts", script), forwarded...)
 	command.Dir = repo
 	command.Stdout = stdout
 	command.Stderr = stderr
-	profileConfig := filepath.Join(repo, "harness", "harness_profiles.json")
-	if _, err := os.Stat(profileConfig); err != nil {
-		profileConfig = filepath.Join(repo, "scripts", "harness_profiles.json")
+
+	executable, err := os.Executable()
+	if err != nil {
+		return cliError(stdout, "resolve engine executable: %v", err)
 	}
+	executableBytes, err := os.ReadFile(executable)
+	if err != nil {
+		return cliError(stdout, "read engine identity: %v", err)
+	}
+	engineDigest := fmt.Sprintf("%x", sha256.Sum256(executableBytes))
 	command.Env = append(os.Environ(),
 		"HARNESS_PROJECT_ROOT="+repo,
 		"HARNESS_ENGINE_DIR="+filepath.Join(runtimeRoot, "scripts"),
-		"HARNESS_PROFILE_CONFIG="+profileConfig,
-		"HARNESS_TOOL_VERSIONS="+filepath.Join(repo, "harness", "tool_versions.env"),
 		"HARNESS_EXTERNAL_ENGINE=1",
 		"HARNESSCTL_VERSION="+Version,
+		"HARNESS_ENGINE_SHA256="+engineDigest,
 		"HARNESSCTL_OWNER_PID="+fmt.Sprint(os.Getpid()),
 	)
 	if err := runSignaledCommand(command); err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			return exitError.ExitCode()
 		}
-		return cliError(stderr, "execute engine: %v", err)
+		return cliError(stdout, "execute engine: %v", err)
 	}
 	return 0
 }
@@ -270,4 +224,20 @@ func extractEngine(destination string) error {
 		}
 		return os.WriteFile(target, contents, mode)
 	})
+}
+
+func decodeStrictJSON(raw []byte, destination any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }

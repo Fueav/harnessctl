@@ -1,6 +1,8 @@
 """Owned, bounded test dependencies shared across Git worktrees (no daemon)."""
 from contextlib import contextmanager
 import copy
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -10,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -88,6 +91,62 @@ def fingerprint(config, images):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+class _DarwinProcess(ctypes.Structure):
+    # Public proc_bsdinfo ABI from macOS sys/proc_info.h (136 bytes).
+    _fields_ = [(name, ctypes.c_uint32) for name in
+                ('flags', 'status', 'xstatus', 'pid', 'ppid', 'uid', 'gid', 'ruid', 'rgid', 'svuid', 'svgid', 'reserved')]
+    _fields_ += [('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32)]
+    _fields_ += [(name, ctypes.c_uint32) for name in ('nfiles', 'pgid', 'jobc', 'tdev', 'tpgid', 'nice')]
+    _fields_ += [('start_seconds', ctypes.c_uint64), ('start_microseconds', ctypes.c_uint64)]
+
+
+def _darwin_library():
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_listpids.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+    library.proc_listpids.restype = ctypes.c_int
+    return library
+
+
+def _darwin_process(pid):
+    info = _DarwinProcess()
+    ctypes.set_errno(0)
+    count = _darwin_library().proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+    error = ctypes.get_errno()
+    if count == 0 and error == errno.ESRCH:
+        return None
+    if count != ctypes.sizeof(info) or info.pid != pid or not info.start_seconds or info.start_microseconds >= 1000000:
+        raise ResourceError(f'cannot establish process identity for PID {pid}: errno {error}; preserving owned state')
+    return None if info.status == 5 else info  # SZOMB has no live writers.
+
+
+def process_group_members(pgid):
+    if sys.platform == 'darwin':
+        library = _darwin_library()
+        capacity = 256
+        while capacity <= 1048576:
+            buffer = (ctypes.c_int * capacity)()
+            ctypes.set_errno(0)
+            count = library.proc_listpids(2, pgid, buffer, ctypes.sizeof(buffer))  # PROC_PGRP_ONLY
+            if count < 0 or count % ctypes.sizeof(ctypes.c_int) or (count == 0 and ctypes.get_errno()):
+                raise ResourceError('cannot inspect workload process group; preserving owned state')
+            if count < ctypes.sizeof(buffer):
+                result = []
+                for pid in buffer[:count // ctypes.sizeof(ctypes.c_int)]:
+                    info = _darwin_process(pid)
+                    if info and info.pgid == pgid:
+                        result.append(pid)
+                return result
+            capacity *= 2
+        raise ResourceError('workload process group exceeds inspection bound')
+    group = subprocess.run(['ps', '-axo', 'pid=,pgid=,stat='], text=True, capture_output=True)
+    if group.returncode:
+        raise ResourceError('cannot inspect workload process group')
+    rows = [line.split() for line in group.stdout.splitlines() if len(line.split()) == 3]
+    return [int(item[0]) for item in rows if int(item[1]) == pgid and not item[2].startswith('Z')]
+
+
 def process_identity(pid):
     if type(pid) is not int or pid <= 0:
         raise ResourceError('invalid process identity')
@@ -100,22 +159,16 @@ def process_identity(pid):
                     'boot': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
         except FileNotFoundError:
             return None
-    command = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart='],
-                             text=True, capture_output=True, env={**os.environ, 'LC_ALL': 'C'})
-    if command.returncode == 1 and not command.stdout.strip():
-        return None
-    if command.returncode or not command.stdout.strip():
-        raise ResourceError('cannot establish process liveness')
-    fields = command.stdout.strip().split(None, 1)
-    if fields[0].startswith('Z'):
-        return None
-    boot = subprocess.run(['sysctl', '-n', 'kern.boottime'], text=True, capture_output=True)
-    if boot.returncode or not boot.stdout.strip():
-        raise ResourceError('cannot establish host boot identity')
-    return {'pid': pid, 'started': fields[1], 'boot': boot.stdout.strip()}
+    if sys.platform == 'darwin':
+        info = _darwin_process(pid)
+        return None if info is None else {'pid': pid, 'started': f'{info.start_seconds}:{info.start_microseconds}',
+                                         'platform': 'darwin-libproc-v1'}
+    raise ResourceError('unsupported process ownership platform')
 
 
 def alive(identity):
+    if sys.platform == 'darwin' and identity.get('platform') != 'darwin-libproc-v1':
+        raise ResourceError('incompatible process identity; use the owning build to close this session')
     return process_identity(identity['pid']) == identity
 
 
